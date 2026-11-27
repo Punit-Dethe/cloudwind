@@ -348,3 +348,20 @@ mod tests {
         assert!(!ct.windows(6).any(|w| w == b"secret"));
     }
 }
+
+#[cfg(test)]
+mod compat {
+    use super::*;
+
+    /// Written by the Android (Kotlin) tests; proves phone-encrypted files open on the PC.
+    #[test]
+    fn decrypts_file_encrypted_by_kotlin() {
+        let key = LibraryKey::from_base64("AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8").unwrap();
+        let ct = include_bytes!("../tests/fixtures/kotlin.cwnd");
+        let mut out = Vec::new();
+        let meta = decrypt(&key, &ct[..], &mut out).unwrap();
+        assert_eq!(meta.name, "kotlin ü.jpg");
+        let want: Vec<u8> = (0..3000usize).map(|i| (i * 7 % 253) as u8).collect();
+        assert_eq!(out, want);
+    }
+}
