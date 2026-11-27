@@ -3,7 +3,16 @@ main = "src/index.ts"
 compatibility_date = "2025-01-01"
 
 [vars]
+# Days a synced object stays in the cloud as a second copy (shortened under storage pressure).
 GRACE_DAYS = "7"
+# Hard cap on bytes held in the inbox (8 GiB: under R2's free 10 GB-month, so $0 even if always full).
+INBOX_CAP_BYTES = "8589934592"
+# Above this fraction of the cap, already-synced copies are evicted oldest-first to make room.
+SOFT_FRACTION = "0.6"
+# Largest single file accepted (5 GiB). Bigger files are refused permanently.
+MAX_OBJECT_BYTES = "5368709120"
+# Full downloads allowed per object per lifetime; stops a looping agent or stolen token.
+MAX_DOWNLOADS = "5"
 
 [[r2_buckets]]
 binding = "INBOX"
@@ -17,3 +26,9 @@ database_id = "867fa03a-a840-44dd-b885-199a6073f6b5"
 # Daily cleanup of inbox copies that were synced more than GRACE_DAYS ago.
 [triggers]
 crons = ["17 3 * * *"]
+
+# Per-role request cap (phone / agent): 600 requests per minute.
+[[ratelimits]]
+name = "LIMITER"
+namespace_id = "1001"
+simple = { limit = 600, period = 60 }

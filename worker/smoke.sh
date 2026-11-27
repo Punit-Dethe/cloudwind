@@ -26,7 +26,7 @@ ok "$(code "${P[@]}" $BASE/v1/objects/$ID)" 403 "phone can't download"
 
 # multipart: 2 parts of 5 MiB + a short last part
 head -c 5242880 /dev/urandom > $T/p1; head -c 5242880 /dev/urandom > $T/p2; head -c 777 /dev/urandom > $T/p3
-UP=$(curl -s -X POST "${P[@]}" $BASE/v1/objects/$ID2/multipart | sed -E 's/.*"uploadId":"([^"]+)".*/\1/')
+UP=$(curl -s -X POST "${P[@]}" -H 'content-type: application/json' -d '{"size":10486777}' $BASE/v1/objects/$ID2/multipart | sed -E 's/.*"uploadId":"([^"]+)".*/\1/')
 parts=""
 for n in 1 2 3; do
   r=$(curl -s -X PUT "${P[@]}" --data-binary @$T/p$n $BASE/v1/objects/$ID2/multipart/$UP/$n)
