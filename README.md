@@ -102,3 +102,9 @@ What the clients do around those limits:
 Recommended: in the Cloudflare dashboard create a billing/usage notification for R2 so a misconfiguration can't surprise you.
 
 Tests: `worker/limits-test.sh` (needs a local Worker with tiny caps, see its header), `worker/smoke.sh`, `cargo test`, `cd android && ./gradlew :core:test`.
+
+## Screenshots
+
+Phone screens are rendered from the real Compose code with sample data (`cd android && ./gradlew :app:recordPaparazziDebug`;
+`verifyPaparazziDebug` flags unintended UI changes). The PC image is the real CLI output with demo values.
+See `docs/screenshots/`.

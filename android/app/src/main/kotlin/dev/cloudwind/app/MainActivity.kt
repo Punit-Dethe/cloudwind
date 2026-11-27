@@ -74,11 +74,10 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun CloudwindTheme(content: @Composable () -> Unit) {
-    val dark = isSystemInDarkTheme()
+fun CloudwindTheme(dark: Boolean = isSystemInDarkTheme(), dynamic: Boolean = true, content: @Composable () -> Unit) {
     val ctx = LocalContext.current
     val scheme = when {
-        Build.VERSION.SDK_INT >= 31 -> if (dark) dynamicDarkColorScheme(ctx) else dynamicLightColorScheme(ctx)
+        dynamic && Build.VERSION.SDK_INT >= 31 -> if (dark) dynamicDarkColorScheme(ctx) else dynamicLightColorScheme(ctx)
         dark -> darkColorScheme()
         else -> lightColorScheme()
     }
@@ -119,20 +118,29 @@ fun Root(vm: MainViewModel) {
 @Composable
 fun Pairing(vm: MainViewModel, ui: UiState) {
     val ctx = LocalContext.current
+    PairingScreen(
+        ui,
+        onScan = {
+            val opts = GmsBarcodeScannerOptions.Builder().setBarcodeFormats(Barcode.FORMAT_QR_CODE).build()
+            GmsBarcodeScanning.getClient(ctx, opts).startScan()
+                .addOnSuccessListener { code -> code.rawValue?.let(vm::pair) }
+                .addOnFailureListener { vm.message("Couldn't open the scanner. You can paste the code instead.") }
+        },
+        onPair = vm::pair,
+    )
+}
+
+@Composable
+fun PairingScreen(ui: UiState, onScan: () -> Unit, onPair: (String) -> Unit) {
     var pasted by remember { mutableStateOf("") }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Spacer(Modifier.height(32.dp))
         Text("Cloudwind", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
         Text("Back up your photos even when your PC is off. Photos are encrypted on this phone before they leave it.")
         Text("On your PC run `cloudwind pair` to show a pairing code, then scan it here.", style = MaterialTheme.typography.bodyMedium)
-        Button(onClick = {
-            val opts = GmsBarcodeScannerOptions.Builder().setBarcodeFormats(Barcode.FORMAT_QR_CODE).build()
-            GmsBarcodeScanning.getClient(ctx, opts).startScan()
-                .addOnSuccessListener { code -> code.rawValue?.let(vm::pair) }
-                .addOnFailureListener { vm.message("Couldn't open the scanner. You can paste the code instead.") }
-        }, enabled = !ui.busy, modifier = Modifier.fillMaxWidth()) { Text("Scan QR code") }
+        Button(onClick = onScan, enabled = !ui.busy, modifier = Modifier.fillMaxWidth()) { Text("Scan QR code") }
         OutlinedTextField(pasted, { pasted = it }, label = { Text("…or paste the pairing code") }, modifier = Modifier.fillMaxWidth(), minLines = 2)
-        OutlinedButton(onClick = { vm.pair(pasted) }, enabled = pasted.isNotBlank() && !ui.busy, modifier = Modifier.fillMaxWidth()) {
+        OutlinedButton(onClick = { onPair(pasted) }, enabled = pasted.isNotBlank() && !ui.busy, modifier = Modifier.fillMaxWidth()) {
             Text(if (ui.busy) "Connecting…" else "Pair with pasted code")
         }
         ui.message?.let { Text(it, color = MaterialTheme.colorScheme.error) }
@@ -143,7 +151,6 @@ fun Pairing(vm: MainViewModel, ui: UiState) {
 fun Home(vm: MainViewModel, ui: UiState) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
-    var confirmUnpair by remember { mutableStateOf(false) }
     var needAccess by remember { mutableStateOf(!hasMediaAccess(ctx)) }
 
     val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
@@ -156,6 +163,37 @@ fun Home(vm: MainViewModel, ui: UiState) {
         vm.deleteResult(r.resultCode == Activity.RESULT_OK)?.let { deleteLauncher.launch(IntentSenderRequest.Builder(it).build()) }
     }
 
+    HomeScreen(
+        ui, needAccess,
+        onAllowAccess = { permLauncher.launch(mediaPermissions()) },
+        onFreeUp = { scope.launch { vm.startDelete()?.let { deleteLauncher.launch(IntentSenderRequest.Builder(it).build()) } } },
+        onBackUpNow = vm::backUpNow,
+        onBackUpOlder = vm::backUpOlder,
+        onWifiOnly = vm::setWifiOnly,
+        onChargingOnly = vm::setChargingOnly,
+        onAllFolders = vm::setAllFolders,
+        onBatterySettings = { ctx.startActivity(Intent(AndroidSettings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) },
+        onPhoneSteps = { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://dontkillmyapp.com"))) },
+        onUnpair = vm::unpair,
+    )
+}
+
+@Composable
+fun HomeScreen(
+    ui: UiState,
+    needAccess: Boolean,
+    onAllowAccess: () -> Unit,
+    onFreeUp: () -> Unit,
+    onBackUpNow: () -> Unit,
+    onBackUpOlder: () -> Unit,
+    onWifiOnly: (Boolean) -> Unit,
+    onChargingOnly: (Boolean) -> Unit,
+    onAllFolders: (Boolean) -> Unit,
+    onBatterySettings: () -> Unit,
+    onPhoneSteps: () -> Unit,
+    onUnpair: () -> Unit,
+) {
+    var confirmUnpair by remember { mutableStateOf(false) }
     val c = ui.counts
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Text("Cloudwind", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
@@ -164,7 +202,7 @@ fun Home(vm: MainViewModel, ui: UiState) {
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Allow access to your photos and videos so Cloudwind can back them up.")
-                    Button(onClick = { permLauncher.launch(mediaPermissions()) }) { Text("Allow access") }
+                    Button(onClick = onAllowAccess) { Text("Allow access") }
                 }
             }
         }
@@ -183,9 +221,7 @@ fun Home(vm: MainViewModel, ui: UiState) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("${c.synced} safe to delete", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     Text("Verified on your PC. Deleting frees about ${formatBytes(c.syncedBytes)} on this phone.")
-                    Button(onClick = {
-                        scope.launch { vm.startDelete()?.let { deleteLauncher.launch(IntentSenderRequest.Builder(it).build()) } }
-                    }) { Text("Free up space") }
+                    Button(onClick = onFreeUp) { Text("Free up space") }
                 }
             }
         }
@@ -209,19 +245,19 @@ fun Home(vm: MainViewModel, ui: UiState) {
         ui.lastError?.let { Text("Last problem: $it", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
         ui.message?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
 
-        Button(onClick = { vm.backUpNow() }, modifier = Modifier.fillMaxWidth()) { Text("Back up now") }
-        OutlinedButton(onClick = { vm.backUpOlder() }, modifier = Modifier.fillMaxWidth()) { Text("Also back up older photos") }
+        Button(onClick = onBackUpNow, modifier = Modifier.fillMaxWidth()) { Text("Back up now") }
+        OutlinedButton(onClick = onBackUpOlder, modifier = Modifier.fillMaxWidth()) { Text("Also back up older photos") }
 
         Text("Upload rules", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-        Toggle("Wi-Fi only", ui.wifiOnly, vm::setWifiOnly)
-        Toggle("Only while charging", ui.chargingOnly, vm::setChargingOnly)
-        Toggle("Include all folders (not just camera)", ui.allFolders, vm::setAllFolders)
+        Toggle("Wi-Fi only", ui.wifiOnly, onWifiOnly)
+        Toggle("Only while charging", ui.chargingOnly, onChargingOnly)
+        Toggle("Include all folders (not just camera)", ui.allFolders, onAllFolders)
 
         Text("If backups stop when the app is closed", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
         Text("Some phones (Xiaomi, Oppo, Vivo, Samsung) stop background apps. Exempt Cloudwind from battery saving.", style = MaterialTheme.typography.bodySmall)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = { ctx.startActivity(Intent(AndroidSettings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }) { Text("Battery settings") }
-            TextButton(onClick = { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://dontkillmyapp.com"))) }) { Text("Your phone's steps") }
+            OutlinedButton(onClick = onBatterySettings) { Text("Battery settings") }
+            TextButton(onClick = onPhoneSteps) { Text("Your phone's steps") }
         }
 
         Spacer(Modifier.height(8.dp))
@@ -234,7 +270,7 @@ fun Home(vm: MainViewModel, ui: UiState) {
             onDismissRequest = { confirmUnpair = false },
             title = { Text("Disconnect this phone?") },
             text = { Text("Backups stop and this phone forgets the encryption key. Photos already on your PC are not affected. Photos still in the cloud inbox can only be read by a phone or PC paired with the same key.") },
-            confirmButton = { TextButton(onClick = { confirmUnpair = false; vm.unpair() }) { Text("Disconnect") } },
+            confirmButton = { TextButton(onClick = { confirmUnpair = false; onUnpair() }) { Text("Disconnect") } },
             dismissButton = { TextButton(onClick = { confirmUnpair = false }) { Text("Cancel") } },
         )
     }
