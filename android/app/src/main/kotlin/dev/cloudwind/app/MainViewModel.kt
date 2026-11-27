@@ -28,6 +28,12 @@ data class UiState(
     val inboxFull: Boolean = false,
     val notice: String? = null,
     val maxObjectBytes: Long = 0,
+    val access: MediaAccess = MediaAccess.FULL,
+    /** Epoch seconds of the last successful pass (0 = never) and of pairing. */
+    val lastRunAt: Long = 0,
+    val pairedAt: Long = 0,
+    val nowSecs: Long = 0,
+    val batteryUnrestricted: Boolean = false,
 )
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
@@ -55,6 +61,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     wifiOnly = settings.wifiOnly, chargingOnly = settings.chargingOnly, allFolders = settings.allFolders,
                     lastError = settings.lastError,
                     inboxFull = settings.inboxFull, notice = settings.notice, maxObjectBytes = settings.maxObjectBytes,
+                    access = MediaAccess.current(getApplication()),
+                    lastRunAt = settings.lastRunAt, pairedAt = settings.pairedAt,
+                    nowSecs = System.currentTimeMillis() / 1000,
+                    batteryUnrestricted = getApplication<Application>().getSystemService(android.os.PowerManager::class.java)
+                        .isIgnoringBatteryOptimizations(getApplication<Application>().packageName),
                 )
             }
         }
@@ -78,6 +89,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 db.clear()
                 // Default: back up photos taken from now on. "Back up older photos" opts into the rest.
                 settings.since = System.currentTimeMillis() / 1000
+                settings.pairedAt = settings.since
                 settings.lastError = null
             }
             Scheduler.schedule(getApplication())

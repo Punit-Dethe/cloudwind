@@ -123,6 +123,16 @@ async function exists(env: Env, id: string) {
   return (await env.DB.prepare("SELECT 1 FROM objects WHERE id = ?").bind(id).first()) !== null;
 }
 
+/** Remember that the phone is alive. Conditional upsert: a write happens at most every 10 minutes. */
+async function touchPhone(env: Env) {
+  const t = now();
+  await env.DB.prepare(
+    "INSERT INTO meta (k, v) VALUES ('phone_last_seen', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v WHERE meta.v < excluded.v - 600",
+  ).bind(t).run();
+}
+
+const UNKNOWN_UPLOAD = /does not exist|NoSuchUpload|10024/i;
+
 const contentLength = (req: Request) => {
   const n = Number(req.headers.get("content-length") ?? "");
   return Number.isFinite(n) && n > 0 ? n : 0;
@@ -144,6 +154,7 @@ export default {
     }
 
     const L = limits(env);
+    if (role === "phone") await touchPhone(env);
     let m: RegExpExecArray | null;
 
     // ---- phone: upload -------------------------------------------------
@@ -186,9 +197,15 @@ export default {
       const len = contentLength(req);
       if (!len) return err(411, "content-length required");
       if (len > MAX_PART) return err(413, "part too large");
-      const up = env.INBOX.resumeMultipartUpload(key(id), uploadId);
-      const p = await up.uploadPart(part, req.body!);
-      return json({ partNumber: p.partNumber, etag: p.etag });
+      try {
+        const up = env.INBOX.resumeMultipartUpload(key(id), uploadId);
+        const p = await up.uploadPart(part, req.body!);
+        return json({ partNumber: p.partNumber, etag: p.etag });
+      } catch (e) {
+        // The upload was aborted (e.g. abandoned for 24 h): tell the phone to start over.
+        if (UNKNOWN_UPLOAD.test(String(e))) return err(404, "unknown_upload");
+        throw e;
+      }
     }
 
     if ((m = /^\/v1\/objects\/([^/]+)\/multipart\/([^/]+)\/complete$/.exec(path)) && req.method === "POST") {
@@ -198,11 +215,16 @@ export default {
       if (await exists(env, id)) return err(409, "already uploaded");
       const res = await env.DB.prepare("SELECT reserved FROM uploads WHERE upload_id = ? AND id = ?")
         .bind(uploadId, id).first<{ reserved: number }>();
-      if (!res) return err(404, "unknown upload");
+      if (!res) return err(404, "unknown_upload");
       const body = (await req.json().catch(() => null)) as { parts?: R2UploadedPart[] } | null;
       if (!body?.parts?.length) return err(400, "parts required");
-      const up = env.INBOX.resumeMultipartUpload(key(id), uploadId);
-      const obj = await up.complete(body.parts);
+      let obj: R2Object;
+      try {
+        obj = await env.INBOX.resumeMultipartUpload(key(id), uploadId).complete(body.parts);
+      } catch (e) {
+        if (UNKNOWN_UPLOAD.test(String(e))) return err(404, "unknown_upload");
+        throw e;
+      }
       await env.DB.prepare("DELETE FROM uploads WHERE upload_id = ?").bind(uploadId).run();
       if (obj.size > res.reserved) {
         // Client declared less than it sent; drop it so the cap can't be dodged.
@@ -246,6 +268,23 @@ export default {
         "SELECT id, size FROM objects WHERE synced_at IS NULL AND purged = 0 ORDER BY uploaded_at LIMIT 500",
       ).all();
       return json({ objects: rows.results });
+    }
+
+    if (path === "/v1/health" && req.method === "GET") {
+      const bad = need("agent"); if (bad) return bad;
+      const [seen, pend] = await env.DB.batch([
+        env.DB.prepare("SELECT v FROM meta WHERE k = 'phone_last_seen'"),
+        env.DB.prepare("SELECT COUNT(*) AS n, COALESCE(SUM(size), 0) AS bytes FROM objects WHERE synced_at IS NULL AND purged = 0"),
+      ]);
+      const used = await usedBytes(env);
+      return json({
+        phone_last_seen: (seen.results[0] as any)?.v ?? null,
+        pending_count: (pend.results[0] as any)?.n ?? 0,
+        pending_bytes: (pend.results[0] as any)?.bytes ?? 0,
+        inbox_bytes: used,
+        cap_bytes: L.cap,
+        now: now(),
+      });
     }
 
     if ((m = /^\/v1\/objects\/([^/]+)$/.exec(path)) && req.method === "GET") {

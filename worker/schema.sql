@@ -15,3 +15,9 @@ CREATE TABLE IF NOT EXISTS uploads (
   reserved   INTEGER NOT NULL,
   created_at INTEGER NOT NULL
 );
+
+-- Small key/value facts, e.g. when the phone last talked to us (lets the PC warn if backups stall).
+CREATE TABLE IF NOT EXISTS meta (
+  k TEXT PRIMARY KEY,
+  v INTEGER NOT NULL
+);

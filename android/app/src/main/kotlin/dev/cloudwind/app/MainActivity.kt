@@ -84,18 +84,6 @@ fun CloudwindTheme(dark: Boolean = isSystemInDarkTheme(), dynamic: Boolean = tru
     MaterialTheme(colorScheme = scheme, content = content)
 }
 
-private fun mediaPermissions(): Array<String> =
-    if (Build.VERSION.SDK_INT >= 33) {
-        arrayOf(Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VIDEO, Manifest.permission.ACCESS_MEDIA_LOCATION, Manifest.permission.POST_NOTIFICATIONS)
-    } else {
-        arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.ACCESS_MEDIA_LOCATION)
-    }
-
-private fun hasMediaAccess(ctx: Context): Boolean {
-    val need = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_IMAGES else Manifest.permission.READ_EXTERNAL_STORAGE
-    return ContextCompat.checkSelfPermission(ctx, need) == PackageManager.PERMISSION_GRANTED
-}
-
 fun formatBytes(b: Long): String = when {
     b >= 1L shl 30 -> "%.1f GB".format(b / (1024.0 * 1024 * 1024))
     b >= 1L shl 20 -> "%.0f MB".format(b / (1024.0 * 1024))
@@ -147,15 +135,29 @@ fun PairingScreen(ui: UiState, onScan: () -> Unit, onPair: (String) -> Unit) {
     }
 }
 
+/** Everything the home screen can ask the app to do. Defaults are no-ops so screenshots/tests stay short. */
+data class HomeActions(
+    val allowAccess: () -> Unit = {},
+    val openAppSettings: () -> Unit = {},
+    val freeUp: () -> Unit = {},
+    val backUpNow: () -> Unit = {},
+    val backUpOlder: () -> Unit = {},
+    val wifiOnly: (Boolean) -> Unit = {},
+    val chargingOnly: (Boolean) -> Unit = {},
+    val allFolders: (Boolean) -> Unit = {},
+    val batterySettings: () -> Unit = {},
+    val phoneSteps: () -> Unit = {},
+    val unpair: () -> Unit = {},
+)
+
 @Composable
 fun Home(vm: MainViewModel, ui: UiState) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
-    var needAccess by remember { mutableStateOf(!hasMediaAccess(ctx)) }
 
     val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
-        needAccess = !hasMediaAccess(ctx)
-        if (!needAccess) vm.backUpNow()
+        vm.refresh()
+        vm.backUpNow()
     }
     // One system confirmation per batch of 500 photos.
     lateinit var deleteLauncher: androidx.activity.result.ActivityResultLauncher<IntentSenderRequest>
@@ -164,50 +166,75 @@ fun Home(vm: MainViewModel, ui: UiState) {
     }
 
     HomeScreen(
-        ui, needAccess,
-        onAllowAccess = { permLauncher.launch(mediaPermissions()) },
-        onFreeUp = { scope.launch { vm.startDelete()?.let { deleteLauncher.launch(IntentSenderRequest.Builder(it).build()) } } },
-        onBackUpNow = vm::backUpNow,
-        onBackUpOlder = vm::backUpOlder,
-        onWifiOnly = vm::setWifiOnly,
-        onChargingOnly = vm::setChargingOnly,
-        onAllFolders = vm::setAllFolders,
-        onBatterySettings = { ctx.startActivity(Intent(AndroidSettings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) },
-        onPhoneSteps = { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://dontkillmyapp.com"))) },
-        onUnpair = vm::unpair,
+        ui,
+        HomeActions(
+            allowAccess = { permLauncher.launch(MediaAccess.requestList(Build.VERSION.SDK_INT)) },
+            openAppSettings = { ctx.startActivity(Intent(AndroidSettings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${ctx.packageName}"))) },
+            freeUp = { scope.launch { vm.startDelete()?.let { deleteLauncher.launch(IntentSenderRequest.Builder(it).build()) } } },
+            backUpNow = vm::backUpNow,
+            backUpOlder = vm::backUpOlder,
+            wifiOnly = vm::setWifiOnly,
+            chargingOnly = vm::setChargingOnly,
+            allFolders = vm::setAllFolders,
+            batterySettings = { ctx.startActivity(Intent(AndroidSettings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) },
+            phoneSteps = { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://dontkillmyapp.com"))) },
+            unpair = vm::unpair,
+        ),
     )
 }
 
 @Composable
-fun HomeScreen(
-    ui: UiState,
-    needAccess: Boolean,
-    onAllowAccess: () -> Unit,
-    onFreeUp: () -> Unit,
-    onBackUpNow: () -> Unit,
-    onBackUpOlder: () -> Unit,
-    onWifiOnly: (Boolean) -> Unit,
-    onChargingOnly: (Boolean) -> Unit,
-    onAllFolders: (Boolean) -> Unit,
-    onBatterySettings: () -> Unit,
-    onPhoneSteps: () -> Unit,
-    onUnpair: () -> Unit,
-) {
+fun HomeScreen(ui: UiState, a: HomeActions) {
     var confirmUnpair by remember { mutableStateOf(false) }
     val c = ui.counts
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Text("Cloudwind", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+    val stale = BackupHealth.isStale(c.pending, ui.lastRunAt, ui.pairedAt, ui.nowSecs)
+    val lastBackup = if (ui.lastRunAt > 0) "Last backup ${BackupHealth.ago(ui.nowSecs - ui.lastRunAt)}" else "No backup has finished yet"
 
-        if (needAccess) {
-            Card(Modifier.fillMaxWidth()) {
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Column {
+            Text("Cloudwind", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+            if (ui.nowSecs > 0) Text(lastBackup, style = MaterialTheme.typography.bodySmall)
+        }
+
+        when (ui.access) {
+            MediaAccess.NONE -> Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Allow access to your photos and videos so Cloudwind can back them up.")
-                    Button(onClick = onAllowAccess) { Text("Allow access") }
+                    Button(onClick = a.allowAccess) { Text("Allow access") }
+                }
+            }
+            MediaAccess.PARTIAL -> Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Only some photos are shared", fontWeight = FontWeight.SemiBold)
+                    Text("Cloudwind can only see the photos you picked, so new photos will not back up on their own. Allow access to all photos to fix this.", style = MaterialTheme.typography.bodySmall)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = a.allowAccess) { Text("Allow all photos") }
+                        TextButton(onClick = a.openAppSettings) { Text("Open settings") }
+                    }
+                }
+            }
+            MediaAccess.FULL -> {}
+        }
+
+        if (stale) {
+            Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Backups seem to have stopped", fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "${c.pending} item(s) are waiting and nothing has uploaded for over a day. " +
+                            (if (!ui.batteryUnrestricted) "Android is probably limiting Cloudwind in the background. " else "") +
+                            "Check Wi-Fi, and don't swipe the app away from recent apps.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = a.backUpNow) { Text("Back up now") }
+                        if (!ui.batteryUnrestricted) OutlinedButton(onClick = a.batterySettings) { Text("Battery settings") }
+                    }
                 }
             }
         }
 
-        // The five-state journey, condensed to what's actionable on the phone.
+        // The journey, condensed to what's actionable on the phone.
         Card(Modifier.fillMaxWidth()) {
             Row(Modifier.padding(16.dp).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                 Stat(c.pending.toString(), "Waiting")
@@ -221,7 +248,7 @@ fun HomeScreen(
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("${c.synced} safe to delete", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     Text("Verified on your PC. Deleting frees about ${formatBytes(c.syncedBytes)} on this phone.")
-                    Button(onClick = onFreeUp) { Text("Free up space") }
+                    Button(onClick = a.freeUp) { Text("Free up space") }
                 }
             }
         }
@@ -241,23 +268,27 @@ fun HomeScreen(
             val max = if (ui.maxObjectBytes > 0) " (limit ${formatBytes(ui.maxObjectBytes)} per file)" else ""
             Text("${c.skipped} item(s) are too large for the inbox$max and were not uploaded. Copy them to your PC another way.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
         }
-        ui.notice?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+        ui.notice?.takeIf { ui.access != MediaAccess.PARTIAL }?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
         ui.lastError?.let { Text("Last problem: $it", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
         ui.message?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
 
-        Button(onClick = onBackUpNow, modifier = Modifier.fillMaxWidth()) { Text("Back up now") }
-        OutlinedButton(onClick = onBackUpOlder, modifier = Modifier.fillMaxWidth()) { Text("Also back up older photos") }
+        Button(onClick = a.backUpNow, modifier = Modifier.fillMaxWidth()) { Text("Back up now") }
+        OutlinedButton(onClick = a.backUpOlder, modifier = Modifier.fillMaxWidth()) { Text("Also back up older photos") }
 
         Text("Upload rules", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-        Toggle("Wi-Fi only", ui.wifiOnly, onWifiOnly)
-        Toggle("Only while charging", ui.chargingOnly, onChargingOnly)
-        Toggle("Include all folders (not just camera)", ui.allFolders, onAllFolders)
+        Toggle("Wi-Fi only", ui.wifiOnly, a.wifiOnly)
+        Toggle("Only while charging", ui.chargingOnly, a.chargingOnly)
+        Toggle("Include all folders (not just camera)", ui.allFolders, a.allFolders)
 
-        Text("If backups stop when the app is closed", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-        Text("Some phones (Xiaomi, Oppo, Vivo, Samsung) stop background apps. Exempt Cloudwind from battery saving.", style = MaterialTheme.typography.bodySmall)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = onBatterySettings) { Text("Battery settings") }
-            TextButton(onClick = onPhoneSteps) { Text("Your phone's steps") }
+        Text("Background reliability", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+        if (ui.batteryUnrestricted) {
+            Text("Battery restrictions are off for Cloudwind. Good.", style = MaterialTheme.typography.bodySmall)
+        } else {
+            Text("Some phones (Xiaomi, Oppo, Vivo, Samsung) stop background apps. Exempt Cloudwind from battery saving.", style = MaterialTheme.typography.bodySmall)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = a.batterySettings) { Text("Battery settings") }
+                TextButton(onClick = a.phoneSteps) { Text("Your phone's steps") }
+            }
         }
 
         Spacer(Modifier.height(8.dp))
@@ -270,7 +301,7 @@ fun HomeScreen(
             onDismissRequest = { confirmUnpair = false },
             title = { Text("Disconnect this phone?") },
             text = { Text("Backups stop and this phone forgets the encryption key. Photos already on your PC are not affected. Photos still in the cloud inbox can only be read by a phone or PC paired with the same key.") },
-            confirmButton = { TextButton(onClick = { confirmUnpair = false; onUnpair() }) { Text("Disconnect") } },
+            confirmButton = { TextButton(onClick = { confirmUnpair = false; a.unpair() }) { Text("Disconnect") } },
             dismissButton = { TextButton(onClick = { confirmUnpair = false }) { Text("Cancel") } },
         )
     }

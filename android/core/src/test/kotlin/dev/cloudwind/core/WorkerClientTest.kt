@@ -109,3 +109,92 @@ class SourceChangedTest {
         Crypto.encrypt(key, "v.mp4", null, { ByteArrayInputStream(ByteArray(1000) { 3 }) }, ByteArrayOutputStream(), 64)
     }
 }
+
+/** Resumable multipart uploads, against a fake Worker that records which parts it received. */
+class ResumeTest {
+    private val partsSeen = mutableListOf<Int>()
+    private var startCount = 0
+    private var failPart: Int? = null
+    private var staleUploadId: String? = null
+    private var completeBody = ""
+    private val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
+        createContext("/") { ex ->
+            val path = ex.requestURI.path
+            val body = ex.requestBody.readBytes()
+            fun reply(code: Int, text: String) {
+                val b = text.toByteArray(); ex.sendResponseHeaders(code, b.size.toLong()); ex.responseBody.use { it.write(b) }
+            }
+            when {
+                path.endsWith("/multipart") -> { startCount++; reply(201, """{"id":"x","uploadId":"U$startCount"}""") }
+                path.endsWith("/complete") -> { completeBody = String(body); reply(201, """{"id":"x"}""") }
+                else -> {
+                    val upload = path.substringAfter("/multipart/").substringBefore("/")
+                    val n = path.substringAfterLast("/").toInt()
+                    when {
+                        upload == staleUploadId -> reply(404, """{"error":"unknown_upload"}""")
+                        n == failPart -> { failPart = null; reply(500, "boom") }
+                        else -> { partsSeen += n; reply(200, """{"partNumber":$n,"etag":"e$n"}""") }
+                    }
+                }
+            }
+        }
+        start()
+    }
+    private val client get() = WorkerClient("http://127.0.0.1:${server.address.port}", "tok")
+    private val big: File = File.createTempFile("cwbig", ".bin").also {
+        // 64 MiB + 1 byte -> 9 parts of 8 MiB (last is 1 byte). Sparse-ish content is fine for the test.
+        java.io.RandomAccessFile(it, "rw").use { f -> f.setLength(WorkerClient.SINGLE_MAX + 1) }
+        it.deleteOnExit()
+    }
+    private val id = WorkerClient.newObjectId()
+
+    @AfterTest fun stop() = server.stop(0)
+
+    @Test
+    fun interrupted_upload_resumes_without_resending_finished_parts() {
+        var saved: ResumeState? = null
+        failPart = 4
+        assertFailsWith<HttpError> { client.upload(id, big, onState = { saved = it }) }
+        assertEquals(listOf(1, 2, 3), partsSeen)
+        assertEquals(3, saved!!.parts.size)
+
+        partsSeen.clear()
+        client.upload(id, big, resume = ResumeState.fromJson(saved!!.toJson()), onState = { saved = it })
+        assertEquals((4..9).toList(), partsSeen, "only the remaining parts are sent")
+        assertEquals(1, startCount, "no second upload was started")
+        assertEquals(null, saved, "state cleared when done")
+        (1..9).forEach { assertTrue(completeBody.contains("\"partNumber\":$it"), "part $it in complete") }
+    }
+
+    @Test
+    fun stop_request_pauses_between_parts_with_progress_saved() {
+        var saved: ResumeState? = null
+        var calls = 0
+        assertFailsWith<UploadInterrupted> { client.upload(id, big, onState = { saved = it }, shouldStop = { ++calls > 2 }) }
+        assertEquals(2, saved!!.parts.size)
+        assertEquals(listOf(1, 2), partsSeen)
+    }
+
+    @Test
+    fun upload_the_server_forgot_starts_over() {
+        staleUploadId = "OLD"
+        client.upload(id, big, resume = ResumeState("OLD", listOf(UploadedPart(1, "e1"), UploadedPart(2, "e2"))))
+        assertEquals(1, startCount, "a fresh upload was started")
+        assertEquals((1..9).toList(), partsSeen)
+    }
+
+    @Test
+    fun garbage_resume_state_is_ignored() {
+        client.upload(id, big, resume = ResumeState("U9", listOf(UploadedPart(5, "x")))) // not contiguous
+        assertEquals(1, startCount)
+        assertEquals((1..9).toList(), partsSeen)
+    }
+
+    @Test
+    fun saved_state_survives_json_roundtrip_and_bad_json_is_null() {
+        val s = ResumeState("U1", listOf(UploadedPart(1, "a")))
+        assertEquals(s, ResumeState.fromJson(s.toJson()))
+        assertEquals(null, ResumeState.fromJson("{nope"))
+        assertEquals(null, ResumeState.fromJson(null))
+    }
+}

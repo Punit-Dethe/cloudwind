@@ -24,7 +24,7 @@ data class Counts(
     val skipped: Int = 0,
 )
 
-class PhotoDb(context: Context) : SQLiteOpenHelper(context.applicationContext, "photos.db", null, 1) {
+class PhotoDb(context: Context) : SQLiteOpenHelper(context.applicationContext, "photos.db", null, 2) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
             """CREATE TABLE photos (
@@ -36,14 +36,21 @@ class PhotoDb(context: Context) : SQLiteOpenHelper(context.applicationContext, "
                 object_id TEXT NOT NULL,
                 uploaded_at INTEGER,
                 synced_at INTEGER,
-                error TEXT
+                error TEXT,
+                stage_size INTEGER,
+                resume TEXT
             )""",
         )
         db.execSQL("CREATE INDEX photos_state ON photos(state)")
         db.execSQL("CREATE UNIQUE INDEX photos_object ON photos(object_id)")
     }
 
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {}
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        if (oldVersion < 2) {
+            db.execSQL("ALTER TABLE photos ADD COLUMN stage_size INTEGER")
+            db.execSQL("ALTER TABLE photos ADD COLUMN resume TEXT")
+        }
+    }
 
     /** Adds a row if this media item isn't tracked yet. The object id is fixed up front so retries are idempotent. */
     fun addIfNew(mediaId: Long, isVideo: Boolean, name: String, size: Long, objectId: String): Boolean {
@@ -117,6 +124,36 @@ class PhotoDb(context: Context) : SQLiteOpenHelper(context.applicationContext, "
         }
         r
     }
+
+    // ---- staged encrypted copy + multipart progress (so big uploads resume) -----------------
+
+    fun stageSize(mediaId: Long): Long? =
+        readableDatabase.rawQuery("SELECT stage_size FROM photos WHERE media_id=?", arrayOf(mediaId.toString())).use { c ->
+            if (c.moveToFirst() && !c.isNull(0)) c.getLong(0) else null
+        }
+
+    fun resumeJson(mediaId: Long): String? =
+        readableDatabase.rawQuery("SELECT resume FROM photos WHERE media_id=?", arrayOf(mediaId.toString())).use { c ->
+            if (c.moveToFirst() && !c.isNull(0)) c.getString(0) else null
+        }
+
+    fun setStage(mediaId: Long, size: Long) {
+        writableDatabase.execSQL("UPDATE photos SET stage_size=?, resume=NULL WHERE media_id=?", arrayOf(size, mediaId))
+    }
+
+    fun setResume(mediaId: Long, json: String?) {
+        writableDatabase.execSQL("UPDATE photos SET resume=? WHERE media_id=?", arrayOf(json, mediaId))
+    }
+
+    fun clearStage(mediaId: Long) {
+        writableDatabase.execSQL("UPDATE photos SET stage_size=NULL, resume=NULL WHERE media_id=?", arrayOf(mediaId))
+    }
+
+    /** Object ids that legitimately have a staged file on disk. */
+    fun stagedObjectIds(): Set<String> =
+        readableDatabase.rawQuery("SELECT object_id FROM photos WHERE state='pending' AND stage_size IS NOT NULL", null).use { c ->
+            buildSet { while (c.moveToNext()) add(c.getString(0)) }
+        }
 
     fun clear() = writableDatabase.execSQL("DELETE FROM photos")
 }

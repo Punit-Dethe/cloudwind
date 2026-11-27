@@ -58,6 +58,16 @@ ok "$(curl -s -o $T/tail -w '%{http_code}' "${A[@]}" -H 'Range: bytes=1000-' $BA
 tail -c +1001 $T/m15 | cmp - $T/tail && echo "ok   resumed bytes match" || { echo "FAIL resumed bytes differ"; fail=1; }
 ok "$(curl -s -o /dev/null -w '%{http_code}' "${A[@]}" -H 'Range: bytes=9999999-' $BASE/v1/objects/$IC)" 416 "range past end -> 416"
 
+# resume support: an upload the server no longer knows must yield a recoverable 404
+ok "$(curl -s -o $T/out -w '%{http_code}' -X PUT "${P[@]}" --data-binary @$T/part $BASE/v1/objects/$(rid)/multipart/not-a-real-upload/1)" 404 "part for a vanished upload -> 404"
+has $T/out unknown_upload "reason is unknown_upload (phone restarts the upload)"
+
+# watchdog: the PC can see whether the phone is alive and what's waiting
+ok "$(curl -s -o $T/h -w '%{http_code}' "${A[@]}" $BASE/v1/health)" 200 "agent can read health"
+has $T/h '"phone_last_seen":[0-9]' "phone_last_seen recorded from phone requests"
+has $T/h '"pending_count"' "health reports pending count"
+ok "$(curl -s -o /dev/null -w '%{http_code}' "${P[@]}" $BASE/v1/health)" 403 "phone cannot read health"
+
 # rate limit (keep last: it throttles this role for a minute)
 n429=0; for i in $(seq 1 700); do c=$(curl -s -o /dev/null -w '%{http_code}' "${A[@]}" $BASE/v1/pending); [ "$c" = 429 ] && n429=$((n429+1)); done
 [ $n429 -gt 0 ] && echo "ok   rate limit kicked in ($n429 of 700 refused)" || { echo "FAIL no 429 after 700 requests"; fail=1; }

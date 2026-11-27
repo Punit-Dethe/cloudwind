@@ -18,14 +18,11 @@ class ScreenshotTest {
     )
 
     private val server = "https://cloudwind.example.workers.dev"
-    private val noop = {}
-    private val noopB: (Boolean) -> Unit = {}
+    private val now = 1_795_800_000L
 
-    private fun home(ui: UiState, needAccess: Boolean = false, dark: Boolean = false) = paparazzi.snapshot {
+    private fun home(ui: UiState, dark: Boolean = false) = paparazzi.snapshot {
         CloudwindTheme(dark = dark, dynamic = false) {
-            Surface(Modifier.fillMaxSize()) {
-                HomeScreen(ui, needAccess, noop, noop, noop, noop, noopB, noopB, noopB, noop, noop, noop)
-            }
+            Surface(Modifier.fillMaxSize()) { HomeScreen(ui.copy(nowSecs = now), HomeActions()) }
         }
     }
 
@@ -37,21 +34,36 @@ class ScreenshotTest {
     @Test
     fun home_catching_up() = home(
         UiState(
-            paired = true, server = server,
+            paired = true, server = server, batteryUnrestricted = true, lastRunAt = now - 240,
             counts = Counts(pending = 3, uploaded = 12, synced = 148, syncedBytes = 1_300_000_000L),
         ),
     )
 
     @Test
     fun home_first_run_needs_access() = home(
-        UiState(paired = true, server = server, counts = Counts(pending = 0)),
-        needAccess = true,
+        UiState(paired = true, server = server, access = MediaAccess.NONE, counts = Counts(pending = 0)),
+    )
+
+    @Test
+    fun home_partial_access() = home(
+        UiState(
+            paired = true, server = server, access = MediaAccess.PARTIAL, lastRunAt = now - 600,
+            counts = Counts(pending = 0, uploaded = 2, synced = 7, syncedBytes = 40_000_000L),
+        ),
+    )
+
+    @Test
+    fun home_backups_stopped() = home(
+        UiState(
+            paired = true, server = server, batteryUnrestricted = false, lastRunAt = now - 3 * 86400L - 3600, pairedAt = now - 9 * 86400L,
+            counts = Counts(pending = 37, uploaded = 4, synced = 210, syncedBytes = 2_100_000_000L),
+        ),
     )
 
     @Test
     fun home_inbox_full_and_too_large() = home(
         UiState(
-            paired = true, server = server,
+            paired = true, server = server, lastRunAt = now - 1800,
             counts = Counts(pending = 9, uploaded = 41, synced = 0, skipped = 2),
             inboxFull = true, maxObjectBytes = 5L shl 30,
             notice = "Not enough free space on this phone to prepare “VID_20261124_201533.mp4” for upload. Free some space and it will continue.",
@@ -61,9 +73,8 @@ class ScreenshotTest {
     @Test
     fun home_dark() = home(
         UiState(
-            paired = true, server = server,
+            paired = true, server = server, batteryUnrestricted = true, lastRunAt = now - 90,
             counts = Counts(pending = 0, uploaded = 5, synced = 312, syncedBytes = 4_800_000_000L),
-            lastError = null,
         ),
         dark = true,
     )

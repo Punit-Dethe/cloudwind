@@ -43,6 +43,11 @@ class Settings(context: Context) {
         get() = sp.getString("notice", null)
         set(v) = sp.edit().putString("notice", v).apply()
 
+    /** When this phone was paired (epoch seconds); anchors the "backups stopped" warning. */
+    var pairedAt: Long
+        get() = sp.getLong("paired_at", 0)
+        set(v) = sp.edit().putLong("paired_at", v).apply()
+
     var lastRunAt: Long
         get() = sp.getLong("last_run", 0)
         set(v) = sp.edit().putLong("last_run", v).apply()

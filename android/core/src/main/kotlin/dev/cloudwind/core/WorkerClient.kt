@@ -23,6 +23,27 @@ data class ObjectStatus(
     val synced_at: Long? = null,
 )
 
+/** One finished multipart part, as the Worker returned it. */
+@Serializable
+data class UploadedPart(val partNumber: Int, val etag: String)
+
+/**
+ * Progress of a multipart upload, saved by the caller after every part so a killed or
+ * interrupted run continues instead of starting over. Part size is fixed (R2 requires equal
+ * parts), so part N always starts at byte (N-1) * PART_SIZE.
+ */
+@Serializable
+data class ResumeState(val uploadId: String, val parts: List<UploadedPart> = emptyList()) {
+    fun toJson(): String = Json.encodeToString(serializer(), this)
+    companion object {
+        fun fromJson(s: String?): ResumeState? =
+            if (s.isNullOrBlank()) null else try { Json.decodeFromString(serializer(), s) } catch (e: Exception) { null }
+    }
+}
+
+/** The caller asked us to stop (e.g. the OS is stopping the job). Progress so far was saved. */
+class UploadInterrupted : IOException("upload paused")
+
 /** Inbox limits as configured on the Worker. */
 @Serializable
 data class Limits(
@@ -120,43 +141,78 @@ class WorkerClient(baseUrl: String, private val token: String) {
     }
 
     /**
-     * Upload an already-encrypted file under `id`. A 409 means a previous attempt
-     * already landed, which counts as success.
+     * Upload an already-encrypted file under `id`. A 409 means a previous attempt already
+     * landed, which counts as success.
+     *
+     * Large files go up in fixed 8 MiB parts. `onState` is called with the progress after every
+     * part (and with null when finished or discarded) so the caller can persist it; pass the saved
+     * value back as `resume` to continue. `shouldStop` is checked between parts and, if true,
+     * throws [UploadInterrupted] with progress already saved.
      */
-    fun upload(id: String, file: File) {
+    fun upload(
+        id: String,
+        file: File,
+        resume: ResumeState? = null,
+        onState: (ResumeState?) -> Unit = {},
+        shouldStop: () -> Boolean = { false },
+    ) {
         require(ID.matches(id)) { "bad id" }
         val size = file.length()
         if (size <= SINGLE_MAX) {
             try { putStream("/v1/objects/$id", file, 0, size, setOf(201)) } catch (e: HttpError) { if (e.code != 409) throw e }
             return
         }
-        val c = open("POST", "/v1/objects/$id/multipart")
-        c.doOutput = true
-        c.setRequestProperty("content-type", "application/json")
-        val start = "{\"size\":$size}".toByteArray() // the Worker reserves this much of the inbox cap
-        c.setFixedLengthStreamingMode(start.size)
-        c.outputStream.use { it.write(start) }
-        val up = try {
-            val text = body(c, setOf(201))
-            (json.parseToJsonElement(text) as JsonObject)["uploadId"]!!.let { (it as JsonPrimitive).content }
+        try {
+            multipart(id, file, size, resume?.takeIf { validResume(it, size) }, onState, shouldStop)
         } catch (e: HttpError) {
-            if (e.code == 409) return else throw e
+            if (e.code == 409) { onState(null); return } // already uploaded earlier
+            if (e.reason == "unknown_upload" && resume != null) {
+                // The server forgot our upload (abandoned for a day). Start over once.
+                onState(null)
+                multipart(id, file, size, null, onState, shouldStop)
+            } else throw e
         }
-        val parts = mutableListOf<JsonObject>()
-        var n = 1; var off = 0L
+    }
+
+    private fun validResume(r: ResumeState, size: Long): Boolean =
+        r.uploadId.isNotEmpty() && r.parts.withIndex().all { (i, p) -> p.partNumber == i + 1 } &&
+            r.parts.size * PART_SIZE <= size + PART_SIZE
+
+    private fun multipart(id: String, file: File, size: Long, resume: ResumeState?, onState: (ResumeState?) -> Unit, shouldStop: () -> Boolean) {
+        var state: ResumeState = resume ?: run {
+            val c = open("POST", "/v1/objects/$id/multipart")
+            c.doOutput = true
+            c.setRequestProperty("content-type", "application/json")
+            val start = "{\"size\":$size}".toByteArray() // the Worker reserves this much of the inbox cap
+            c.setFixedLengthStreamingMode(start.size)
+            c.outputStream.use { it.write(start) }
+            val text = body(c, setOf(201))
+            ResumeState((json.parseToJsonElement(text) as JsonObject)["uploadId"]!!.let { (it as JsonPrimitive).content })
+                .also { onState(it) }
+        }
+        var n = state.parts.size + 1
+        var off = (n - 1) * PART_SIZE
+        var parts = state.parts
         while (off < size) {
+            if (shouldStop()) throw UploadInterrupted()
             val len = minOf(PART_SIZE, size - off)
-            val text = putStream("/v1/objects/$id/multipart/$up/$n", file, off, len, setOf(200))
-            parts += json.parseToJsonElement(text) as JsonObject
+            val text = putStream("/v1/objects/$id/multipart/${state.uploadId}/$n", file, off, len, setOf(200))
+            val p = json.parseToJsonElement(text) as JsonObject
+            parts = parts + UploadedPart((p["partNumber"] as JsonPrimitive).content.toInt(), (p["etag"] as JsonPrimitive).content)
+            state = ResumeState(state.uploadId, parts)
+            onState(state)
             n++; off += len
         }
-        val done = open("POST", "/v1/objects/$id/multipart/$up/complete")
+        val done = open("POST", "/v1/objects/$id/multipart/${state.uploadId}/complete")
         done.doOutput = true
         done.setRequestProperty("content-type", "application/json")
-        val payload = buildJsonObject { put("parts", buildJsonArray { parts.forEach { add(it) } }) }.toString().toByteArray()
+        val payload = buildJsonObject {
+            put("parts", buildJsonArray { parts.forEach { add(buildJsonObject { put("partNumber", it.partNumber); put("etag", it.etag) }) } })
+        }.toString().toByteArray()
         done.setFixedLengthStreamingMode(payload.size)
         done.outputStream.use { it.write(payload) }
         try { body(done, setOf(201)) } catch (e: HttpError) { if (e.code != 409) throw e }
+        onState(null)
     }
 
     /** Current inbox limits and free space, without listing objects. */
