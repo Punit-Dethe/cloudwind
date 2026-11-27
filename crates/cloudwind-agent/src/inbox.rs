@@ -1,7 +1,7 @@
 use std::{
     fs::{self, File},
     io::Read,
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result};
@@ -14,11 +14,12 @@ pub struct Receipt {
     pub synced_at: u64,
 }
 
-/// Where encrypted objects wait. A local folder for now; R2/S3 comes next.
+/// Where encrypted objects wait. A local folder for testing, or the Cloudflare Worker.
 pub trait Inbox {
     /// Ids of objects that have not been synced yet.
     fn pending(&self) -> Result<Vec<String>>;
-    fn open(&self, id: &str) -> Result<Box<dyn Read>>;
+    /// Download the ciphertext to `dest`. If `dest` already holds a partial download, continue it.
+    fn fetch(&self, id: &str, dest: &Path) -> Result<()>;
     fn put_receipt(&self, id: &str, receipt: &Receipt) -> Result<()>;
 }
 
@@ -72,8 +73,9 @@ impl Inbox for DirInbox {
         ids.sort();
         Ok(ids)
     }
-    fn open(&self, id: &str) -> Result<Box<dyn Read>> {
-        Ok(Box::new(File::open(self.obj(id))?))
+    fn fetch(&self, id: &str, dest: &Path) -> Result<()> {
+        fs::copy(self.obj(id), dest)?;
+        Ok(())
     }
     fn put_receipt(&self, id: &str, r: &Receipt) -> Result<()> {
         fs::write(self.receipt(id), serde_json::to_vec_pretty(r)?)?;

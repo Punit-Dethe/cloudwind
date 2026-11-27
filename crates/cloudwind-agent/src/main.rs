@@ -1,5 +1,6 @@
 mod inbox;
 mod remote;
+mod state;
 mod sync;
 
 use std::{fs, path::PathBuf, time::UNIX_EPOCH};
@@ -140,14 +141,18 @@ fn main() -> Result<()> {
         }
         Cmd::Sync => {
             let (cfg, key) = load(&path)?;
-            let r = sync::run(open_inbox(&cfg)?.as_ref(), &key, &cfg.library)?;
+            let mut st = state::State::load(&path.parent().context("config has no parent dir")?.join("state"))?;
+            let r = sync::run(open_inbox(&cfg)?.as_ref(), &key, &cfg.library, &mut st)?;
             for p in &r.synced {
                 println!("synced {}", p.display());
             }
             for (id, e) in &r.failed {
                 eprintln!("FAILED {id}: {e}");
             }
-            println!("{} synced, {} failed", r.synced.len(), r.failed.len());
+            println!(
+                "{} synced, {} duplicate(s) skipped, {} waiting to retry, {} failed",
+                r.synced.len(), r.duplicates, r.backed_off, r.failed.len()
+            );
             if !r.failed.is_empty() {
                 std::process::exit(1);
             }

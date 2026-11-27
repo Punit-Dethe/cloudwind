@@ -8,21 +8,55 @@ use std::{
 use anyhow::Result;
 use cloudwind_core::{decrypt, LibraryKey};
 
-use crate::inbox::{Inbox, Receipt};
+use crate::{
+    inbox::{Inbox, Receipt},
+    state::State,
+};
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Report {
     pub synced: Vec<PathBuf>,
+    /// Already had these bytes (same SHA-256): acknowledged without storing a second copy.
+    pub duplicates: usize,
+    /// Skipped this run because an earlier attempt failed and its backoff hasn't elapsed.
+    pub backed_off: usize,
     pub failed: Vec<(String, String)>,
 }
 
-/// Keep only the final path component so a hostile name can't escape `dir`.
-fn safe_name(name: &str) -> String {
+const MAX_NAME_BYTES: usize = 200;
+const RESERVED: [&str; 22] = [
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1",
+    "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
+/// A file name that is safe on Windows, macOS and Linux and can't escape the library folder.
+pub fn safe_name(name: &str) -> String {
     let base = name.rsplit(['/', '\\']).next().unwrap_or("");
-    match base.trim() {
-        "" | "." | ".." => "file".into(),
-        b => b.to_string(),
+    let cleaned: String = base
+        .chars()
+        .map(|c| if c.is_control() || "<>:\"|?*".contains(c) { '_' } else { c })
+        .collect();
+    // Windows silently strips trailing dots and spaces, which would make `a.jpg.` collide with `a.jpg`.
+    let mut s = cleaned.trim().trim_end_matches(['.', ' ']).to_string();
+    if s.is_empty() {
+        return "file".into();
     }
+    let stem = s.split('.').next().unwrap_or("").to_ascii_uppercase();
+    if RESERVED.contains(&stem.as_str()) {
+        s = format!("_{s}");
+    }
+    if s.len() > MAX_NAME_BYTES {
+        let (stem, ext) = match s.rsplit_once('.') {
+            Some((st, e)) if !st.is_empty() && e.len() <= 16 => (st.to_string(), format!(".{e}")),
+            _ => (s.clone(), String::new()),
+        };
+        let mut cut = MAX_NAME_BYTES.saturating_sub(ext.len());
+        while !stem.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        s = format!("{}{}", &stem[..cut], ext);
+    }
+    s
 }
 
 /// Pick a path in `dir` that doesn't exist yet: `a.jpg`, `a (1).jpg`, ...
@@ -41,44 +75,74 @@ fn unique_path(dir: &Path, name: &str) -> PathBuf {
         .unwrap()
 }
 
-/// Pull everything pending: decrypt, verify the hash, move into place, then
-/// write a receipt. A file is never visible in `library` until it verifies.
-pub fn run(inbox: &dyn Inbox, key: &LibraryKey, library: &Path) -> Result<Report> {
+fn now() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+/// Pull everything pending: download (resumable), decrypt, verify the hash, move into place,
+/// then write a receipt. A file is never visible in `library` until it verifies.
+pub fn run(inbox: &dyn Inbox, key: &LibraryKey, library: &Path, state: &mut State) -> Result<Report> {
     fs::create_dir_all(library)?;
     let mut report = Report::default();
     for id in inbox.pending()? {
-        match pull_one(inbox, key, library, &id) {
-            Ok(p) => report.synced.push(p),
-            Err(e) => report.failed.push((id, format!("{e:#}"))),
+        if !state.due(&id, now()) {
+            report.backed_off += 1;
+            continue;
+        }
+        match pull_one(inbox, key, library, state, &id) {
+            Ok(Some(p)) => {
+                state.clear_failure(&id);
+                report.synced.push(p);
+            }
+            Ok(None) => {
+                state.clear_failure(&id);
+                report.duplicates += 1;
+            }
+            Err(e) => {
+                state.record_failure(&id, now());
+                report.failed.push((id, format!("{e:#}")));
+            }
         }
     }
     Ok(report)
 }
 
-fn pull_one(inbox: &dyn Inbox, key: &LibraryKey, library: &Path, id: &str) -> Result<PathBuf> {
+/// `Ok(Some(path))` stored a new file, `Ok(None)` it was a duplicate (acknowledged, not stored again).
+fn pull_one(inbox: &dyn Inbox, key: &LibraryKey, library: &Path, state: &mut State, id: &str) -> Result<Option<PathBuf>> {
+    let dl = state.tmp_path(id);
+    inbox.fetch(id, &dl)?;
+
     let tmp = library.join(format!(".cloudwind-{id}.part"));
-    let result = (|| {
+    let decrypted = (|| {
         let out = BufWriter::new(File::create(&tmp)?);
-        Ok::<_, anyhow::Error>(decrypt(key, inbox.open(id)?, out)?)
+        Ok::<_, anyhow::Error>(decrypt(key, File::open(&dl)?, out)?)
     })();
-    let meta = match result {
+    let meta = match decrypted {
         Ok(m) => m,
         Err(e) => {
             let _ = fs::remove_file(&tmp);
+            let _ = fs::remove_file(&dl); // corrupt or wrong key: next attempt downloads fresh
             return Err(e);
         }
     };
-    let dest = unique_path(library, &safe_name(&meta.name));
-    fs::rename(&tmp, &dest)?;
-    if let Some(t) = meta.modified {
-        let when = UNIX_EPOCH + std::time::Duration::from_secs(t);
-        if let Ok(f) = File::options().write(true).open(&dest) {
-            let _ = f.set_modified(when);
+
+    let stored = if state.has_seen(&meta.sha256) {
+        let _ = fs::remove_file(&tmp);
+        None
+    } else {
+        let dest = unique_path(library, &safe_name(&meta.name));
+        fs::rename(&tmp, &dest)?;
+        if let Some(t) = meta.modified {
+            if let Ok(f) = File::options().write(true).open(&dest) {
+                let _ = f.set_modified(UNIX_EPOCH + std::time::Duration::from_secs(t));
+            }
         }
-    }
-    let synced_at = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-    inbox.put_receipt(id, &Receipt { sha256: meta.sha256, synced_at })?;
-    Ok(dest)
+        state.record_seen(&meta.sha256)?;
+        Some(dest)
+    };
+    let _ = fs::remove_file(&dl);
+    inbox.put_receipt(id, &Receipt { sha256: meta.sha256, synced_at: now() })?;
+    Ok(stored)
 }
 
 #[cfg(test)]
@@ -93,41 +157,88 @@ mod tests {
         inbox.put(&ct).unwrap()
     }
 
+    struct Env {
+        _d: tempfile::TempDir,
+        inbox: DirInbox,
+        lib: PathBuf,
+        state: State,
+    }
+    fn env() -> Env {
+        let d = tempfile::tempdir().unwrap();
+        let inbox = DirInbox { root: d.path().join("inbox") };
+        let state = State::load(&d.path().join("state")).unwrap();
+        Env { lib: d.path().join("photos"), inbox, state, _d: d }
+    }
+
     #[test]
     fn syncs_verifies_and_is_idempotent() {
-        let d = tempfile::tempdir().unwrap();
-        let inbox = DirInbox { root: d.path().join("inbox") };
-        let lib = d.path().join("photos");
+        let mut e = env();
         let key = LibraryKey::generate();
-        let id = upload(&inbox, &key, "IMG_1.jpg", b"pixels");
-        upload(&inbox, &key, "IMG_1.jpg", b"other pixels"); // same name, different file
+        let id = upload(&e.inbox, &key, "IMG_1.jpg", b"pixels");
+        upload(&e.inbox, &key, "IMG_1.jpg", b"other pixels"); // same name, different file
 
-        let r = run(&inbox, &key, &lib).unwrap();
+        let r = run(&e.inbox, &key, &e.lib, &mut e.state).unwrap();
         assert_eq!(r.synced.len(), 2);
         assert!(r.failed.is_empty());
-        assert_eq!(fs::read(lib.join("IMG_1.jpg")).unwrap().len() + fs::read(lib.join("IMG_1 (1).jpg")).unwrap().len(), 6 + 12);
-        assert!(inbox.root.join(format!("{id}.synced.json")).exists());
+        let total = fs::read(e.lib.join("IMG_1.jpg")).unwrap().len() + fs::read(e.lib.join("IMG_1 (1).jpg")).unwrap().len();
+        assert_eq!(total, 6 + 12);
+        assert!(e.inbox.root.join(format!("{id}.synced.json")).exists());
 
-        let again = run(&inbox, &key, &lib).unwrap();
-        assert_eq!(again, Report::default());
+        assert_eq!(run(&e.inbox, &key, &e.lib, &mut e.state).unwrap(), Report::default());
     }
 
     #[test]
-    fn bad_file_leaves_nothing_behind() {
-        let d = tempfile::tempdir().unwrap();
-        let inbox = DirInbox { root: d.path().join("inbox") };
-        let lib = d.path().join("photos");
-        let id = upload(&inbox, &LibraryKey::generate(), "a.jpg", b"x");
-        let r = run(&inbox, &LibraryKey::generate(), &lib).unwrap();
+    fn same_bytes_uploaded_twice_are_stored_once_but_both_acknowledged() {
+        let mut e = env();
+        let key = LibraryKey::generate();
+        // A re-paired phone or an overlapping "back up older photos" uploads the same photo again.
+        let a = upload(&e.inbox, &key, "IMG_7.jpg", b"same pixels");
+        let b = upload(&e.inbox, &key, "IMG_7.jpg", b"same pixels");
+        let r = run(&e.inbox, &key, &e.lib, &mut e.state).unwrap();
+        assert_eq!((r.synced.len(), r.duplicates), (1, 1));
+        let stored: Vec<_> = fs::read_dir(&e.lib).unwrap().collect();
+        assert_eq!(stored.len(), 1);
+        for id in [a, b] {
+            assert!(e.inbox.root.join(format!("{id}.synced.json")).exists(), "both are confirmed so the phone can delete");
+        }
+        // Remembered across runs, too.
+        let c = upload(&e.inbox, &key, "IMG_7 copy.jpg", b"same pixels");
+        let mut again = State::load(&e._d.path().join("state")).unwrap();
+        let r = run(&e.inbox, &key, &e.lib, &mut again).unwrap();
+        assert_eq!((r.synced.len(), r.duplicates), (0, 1));
+        assert!(e.inbox.root.join(format!("{c}.synced.json")).exists());
+    }
+
+    #[test]
+    fn bad_file_leaves_nothing_behind_and_backs_off() {
+        let mut e = env();
+        let id = upload(&e.inbox, &LibraryKey::generate(), "a.jpg", b"x");
+        let r = run(&e.inbox, &LibraryKey::generate(), &e.lib, &mut e.state).unwrap();
         assert_eq!(r.failed.len(), 1);
-        assert!(fs::read_dir(&lib).unwrap().next().is_none());
-        assert!(!inbox.root.join(format!("{id}.synced.json")).exists());
+        assert!(fs::read_dir(&e.lib).unwrap().next().is_none());
+        assert!(!e.inbox.root.join(format!("{id}.synced.json")).exists());
+        assert!(!e.state.tmp_path(&id).exists(), "corrupt download is discarded");
+
+        // Immediately re-running must not hammer the same object.
+        let r = run(&e.inbox, &LibraryKey::generate(), &e.lib, &mut e.state).unwrap();
+        assert_eq!((r.failed.len(), r.backed_off), (0, 1));
     }
 
     #[test]
-    fn hostile_names_stay_inside_library() {
+    fn names_are_safe_on_every_platform() {
         assert_eq!(safe_name("../../etc/passwd"), "passwd");
         assert_eq!(safe_name("..\\x.jpg"), "x.jpg");
         assert_eq!(safe_name(".."), "file");
+        assert_eq!(safe_name(""), "file");
+        assert_eq!(safe_name("a:b*c?.jpg"), "a_b_c_.jpg");
+        assert_eq!(safe_name("photo.jpg. "), "photo.jpg");
+        assert_eq!(safe_name("CON.jpg"), "_CON.jpg");
+        assert_eq!(safe_name("nul"), "_nul");
+        assert_eq!(safe_name("Concert.jpg"), "Concert.jpg");
+        assert_eq!(safe_name(".hidden"), ".hidden");
+        let long = format!("{}.mp4", "é".repeat(300));
+        let s = safe_name(&long);
+        assert!(s.len() <= MAX_NAME_BYTES && s.ends_with(".mp4"));
+        assert!(std::str::from_utf8(s.as_bytes()).is_ok());
     }
 }

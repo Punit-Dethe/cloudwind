@@ -68,3 +68,37 @@ Live end-to-end check (Kotlin client -> Worker -> Rust agent, includes a 70 MB m
 CLOUDWIND_E2E_URL=https://cloudwind.<you>.workers.dev CLOUDWIND_E2E_PHONE_TOKEN=... CLOUDWIND_E2E_DIR=<dir with IMG_*/VID_* files> \
   ./gradlew :core:test --tests '*E2eTest*'
 ```
+
+## Limits and edge cases
+
+R2's 10 GB is a monthly *average*, not a wall: going over costs about $0.015 per GB-month, not an outage.
+The hard wall is the Workers free plan's 100,000 requests a day. Cloudwind's guards, all set in `worker/wrangler.toml`
+(change a value, then `npx wrangler deploy`):
+
+| Guard | Default | What happens |
+| --- | --- | --- |
+| `INBOX_CAP_BYTES` | 8 GiB | Uploads that would exceed it get `507 inbox_full` plus the free bytes. In-flight multipart uploads reserve their declared size. 8 GiB is under R2's free 10 GB, so it stays at $0 even if full all month. |
+| `SOFT_FRACTION` | 0.6 | Above 60% of the cap, already-synced copies are evicted oldest-first to make room. Unsynced objects are **never** evicted. |
+| `GRACE_DAYS` | 7 | Daily cron deletes synced copies after this long; also aborts multipart uploads abandoned for 24 h. |
+| `MAX_OBJECT_BYTES` | 5 GiB | Larger files are refused permanently (`413`); the phone sets them aside as "too large" and never retries. |
+| `MAX_DOWNLOADS` | 5 | Full downloads allowed per object, so a looping agent or stolen agent token can't hammer egress. Resumed (`Range`) tails don't count. |
+| `LIMITER` | 600 req/min per role | Phone and agent are limited separately; clients back off on `429`. |
+
+Rough budget: one photo costs about 3 Worker requests (upload, download, confirm), so the 100,000/day free limit is tens of
+thousands of photos a day.
+
+What the clients do around those limits:
+
+- **Phone, inbox full:** skips items that don't fit, keeps uploading smaller ones, shows "Cloud inbox is full", and retries on the next pass. Originals are never touched, and "Free up space" only appears after the PC verified a file.
+- **Phone, over-limit file:** set aside permanently and counted in the UI.
+- **Phone, newest first:** recent photos are backed up before an old backlog.
+- **Phone, file changing while it is read** (a video still recording): the upload is refused and retried later, instead of shipping a hash the PC would reject forever.
+- **Phone, low on free space:** big videos are staged as an encrypted temp copy; if there isn't room it skips them with a notice.
+- **PC, flaky internet:** downloads resume from the byte where they stopped, with retry backoff.
+- **PC, corrupt or undecryptable object:** discarded, retried with growing backoff (1 min doubling to 6 h), never in a tight loop.
+- **PC, duplicates:** the agent remembers file hashes (`state/seen.txt`), so a re-paired phone or overlapping "back up older photos" doesn't create a second copy; it still confirms the object so the phone can delete.
+- **PC, file names:** sanitized for Windows (reserved names, `: * ? " < > |`, trailing dots/spaces, over-long names).
+
+Recommended: in the Cloudflare dashboard create a billing/usage notification for R2 so a misconfiguration can't surprise you.
+
+Tests: `worker/limits-test.sh` (needs a local Worker with tiny caps, see its header), `worker/smoke.sh`, `cargo test`, `cd android && ./gradlew :core:test`.
