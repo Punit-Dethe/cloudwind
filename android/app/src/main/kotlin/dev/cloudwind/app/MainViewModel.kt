@@ -3,6 +3,7 @@ package dev.cloudwind.app
 import android.app.Application
 import android.content.IntentSender
 import android.provider.MediaStore
+import java.io.File
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.cloudwind.core.Pairing
@@ -103,6 +104,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             withContext(Dispatchers.IO) {
                 store.savePairing(p)
                 db.clear()
+                File(getApplication<Application>().filesDir, "staging").deleteRecursively()
+                settings.lastLanHost = null
+                settings.pcOnNetwork = false
                 // Default: back up photos taken from now on. "Back up older photos" opts into the rest.
                 settings.since = System.currentTimeMillis() / 1000
                 settings.pairedAt = settings.since
@@ -119,6 +123,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch(Dispatchers.IO) {
             Scheduler.cancelAll(getApplication())
             store.clear(); settings.clear(); db.clear()
+            File(getApplication<Application>().filesDir, "staging").deleteRecursively() // encrypted copies awaiting upload
             _state.value = UiState()
         }
     }
@@ -141,17 +146,29 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // ---- safe-to-delete ---------------------------------------------------
 
     /**
-     * Collects photos the PC has confirmed and that still exist on the phone, in batches of
-     * 500 (one system prompt each). Returns the first prompt, or null if nothing to delete.
+     * Collects photos the PC has confirmed and that are still exactly what was backed up, in batches of 500
+     * (one system prompt each). Returns the first prompt, or null if nothing to delete.
+     *
+     * A photo edited after it was backed up is never offered: deleting it would lose the edit. It is queued
+     * for a fresh backup instead.
      */
     suspend fun startDelete(): IntentSender? = withContext(Dispatchers.IO) {
         val resolver = getApplication<Application>().contentResolver
         val live = mutableListOf<Photo>()
         val gone = mutableListOf<Long>()
+        var changed = 0
         for (p in db.byState("synced")) {
-            if (MediaScanner.exists(resolver, p.mediaId, p.isVideo)) live += p else gone += p.mediaId
+            when (val now = MediaScanner.currentSize(resolver, p.mediaId, p.isVideo)) {
+                null -> gone += p.mediaId
+                p.size -> live += p
+                else -> { db.requeue(p.mediaId, now, WorkerClient.newObjectId()); changed++ }
+            }
         }
         if (gone.isNotEmpty()) db.remove(gone) // already deleted elsewhere
+        if (changed > 0) {
+            message("$changed photo(s) changed after backup, so they were kept and will be backed up again.")
+            Scheduler.backUpNow(getApplication())
+        }
         deleteBatches.clear()
         live.chunked(500).forEach { deleteBatches.addLast(it) }
         nextDelete()
@@ -161,7 +178,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val batch = deleteBatches.removeFirstOrNull() ?: return null
         activeBatch = batch
         val uris = batch.map { MediaScanner.uriFor(it.mediaId, it.isVideo) }
-        return MediaStore.createDeleteRequest(getApplication<Application>().contentResolver, uris).intentSender
+        // Trash, not permanent delete: the phone keeps them restorable for about 30 days.
+        return MediaStore.createTrashRequest(getApplication<Application>().contentResolver, uris, true).intentSender
     }
 
     /** The user answered the system prompt for the active batch. */

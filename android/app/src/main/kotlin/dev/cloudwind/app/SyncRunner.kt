@@ -16,7 +16,6 @@ import dev.cloudwind.core.LanPlanItem
 import dev.cloudwind.core.LanSend
 import dev.cloudwind.core.LanUnavailable
 import dev.cloudwind.core.Limits
-import dev.cloudwind.core.Pairing
 import dev.cloudwind.core.Policy
 import dev.cloudwind.core.ResumeState
 import dev.cloudwind.core.RoutePlanner
@@ -80,7 +79,7 @@ class SyncRunner(private val context: Context) {
         }
 
         cleanStaging()
-        MediaScanner.scan(resolver, db, settings)
+        MediaScanner.scan(context, db, settings)
 
         val gates = settings.gates
         val pass = Pass()
@@ -94,11 +93,15 @@ class SyncRunner(private val context: Context) {
         // ---- 2. direct phase -----------------------------------------------------------------
         if (lan != null) {
             try {
-                directPhase(lan, client, pairing, pass, gates, shouldStop)
+                directPhase(lan, client, pass, gates, onProgress, shouldStop)
             } catch (e: UploadInterrupted) {
                 return paused(isStopped, pass)
-            } catch (e: LanUnavailable) {
-                lan = null // PC went away mid-pass: the rest falls back to the cloud (or waits if Home-only)
+            } catch (e: SecurityException) {
+                return fail(Outcome.AuthFailed("Photo access was revoked. Grant it again in Settings."))
+            } catch (e: IOException) {
+                // Any network failure talking to the PC (not only TLS problems): the rest of this pass falls
+                // back to the cloud, or waits if Home-only.
+                lan = null
                 settings.pcOnNetwork = false
             }
         }
@@ -172,7 +175,7 @@ class SyncRunner(private val context: Context) {
     // ============================== direct route ==============================
 
     /** Find the PC: last address that worked, then the encrypted address hint the PC publishes to the cloud. */
-    private fun findPc(pairing: Pairing, client: WorkerClient, internet: Boolean): LanClient? {
+    private fun findPc(pairing: dev.cloudwind.core.Pairing, client: WorkerClient, internet: Boolean): LanClient? {
         val fp = pairing.lanFingerprint ?: return null
         val token = dev.cloudwind.core.lanAuthToken(pairing.key)
         val candidates = mutableListOf<String>()
@@ -191,9 +194,8 @@ class SyncRunner(private val context: Context) {
         return null
     }
 
-    private fun ensureHash(p: Photo, shouldStop: () -> Boolean): Pair<String, Long>? {
+    private fun ensureHash(p: Photo): Pair<String, Long>? {
         db.cachedHash(p.mediaId, p.size)?.let { return it to p.size }
-        if (shouldStop()) return null
         return try {
             val (sha, n) = openOriginal(p).use { Crypto.hash(it) }
             db.setHash(p.mediaId, sha, n)
@@ -209,7 +211,10 @@ class SyncRunner(private val context: Context) {
             ?: throw IOException("cannot open ${p.name}")
     }
 
-    private fun directPhase(lan: LanClient, client: WorkerClient, pairing: Pairing, pass: Pass, gates: dev.cloudwind.core.Gates, shouldStop: () -> Boolean) {
+    private fun directPhase(
+        lan: LanClient, client: WorkerClient, pass: Pass, gates: dev.cloudwind.core.Gates,
+        onProgress: (Int, Int, String) -> Unit, shouldStop: () -> Boolean,
+    ) {
         val rows = db.unsynced()
         if (rows.isEmpty()) return
 
@@ -227,29 +232,38 @@ class SyncRunner(private val context: Context) {
             candidates += p
         }
 
-        // Hash what we can this pass (cached after the first time); the rest is planned next pass.
-        val hashed = LinkedHashMap<String, Triple<Photo, String, Long>>() // id -> (row, sha, size)
-        for (p in candidates) {
-            val (sha, n) = ensureHash(p, shouldStop) ?: continue
-            hashed[p.mediaId.toString()] = Triple(p, sha, n)
-        }
-        if (hashed.isEmpty()) return
-
-        val plan = lan.plan(hashed.map { (id, t) -> LanPlanItem(id, t.second, t.third, t.first.objectId.takeIf { t.first.state == "uploaded" }) })
-        val now = System.currentTimeMillis() / 1000
-        plan.have.forEach { id -> hashed[id]?.let { db.markSyncedDirect(it.first.mediaId, now); pass.direct++ } }
-
+        // Work in batches: hash 50, ask the PC, send what it wants, repeat. A big backlog starts moving at once
+        // instead of spending the whole pass hashing before the first byte goes out.
         val cond = Device.conditions(context, lanReachable = true)
-        for ((i, w) in plan.want.withIndex()) {
-            if (shouldStop()) throw UploadInterrupted()
-            val (p, sha, n) = hashed[w.id] ?: continue
-            if (!RoutePlanner.batteryOk(FileInfo(n, settings.policyFor(p.relPath), p.state == "uploaded"), cond, gates)) {
-                pass.waits.merge(Wait.BATTERY, 1, Int::plus)
-                continue
+        var done = 0
+        for (batch in candidates.chunked(50)) {
+            val hashed = LinkedHashMap<String, Triple<Photo, String, Long>>() // id -> (row, sha, size)
+            for (p in batch) {
+                if (shouldStop()) throw UploadInterrupted()
+                val (sha, n) = ensureHash(p) ?: continue
+                hashed[p.mediaId.toString()] = Triple(p, sha, n)
             }
-            if (sendDirect(lan, p, sha, n, w.offset, shouldStop)) {
-                db.markSyncedDirect(p.mediaId, System.currentTimeMillis() / 1000)
-                pass.direct++
+            if (hashed.isEmpty()) continue
+
+            val plan = lan.plan(hashed.map { (id, t) -> LanPlanItem(id, t.second, t.third, t.first.objectId.takeIf { t.first.state == "uploaded" }) })
+            for (id in plan.have) {
+                val (p, _, n) = hashed[id] ?: continue
+                db.setSize(p.mediaId, n)
+                db.markSyncedDirect(p.mediaId, System.currentTimeMillis() / 1000) // the PC already had it: nothing sent
+            }
+            for (w in plan.want) {
+                if (shouldStop()) throw UploadInterrupted()
+                val (p, sha, n) = hashed[w.id] ?: continue
+                if (!RoutePlanner.batteryOk(FileInfo(n, settings.policyFor(p.relPath), p.state == "uploaded"), cond, gates)) {
+                    pass.waits.merge(Wait.BATTERY, 1, Int::plus)
+                    continue
+                }
+                onProgress(done++, candidates.size, p.name)
+                if (sendDirect(lan, p, sha, n, w.offset, shouldStop)) {
+                    db.setSize(p.mediaId, n) // exactly what the PC verified, for the safe-to-delete check
+                    db.markSyncedDirect(p.mediaId, System.currentTimeMillis() / 1000)
+                    pass.direct++
+                }
             }
         }
     }
@@ -268,7 +282,7 @@ class SyncRunner(private val context: Context) {
                     is LanSend.Conflict -> offset = r.have
                     is LanSend.Progress -> offset = r.have
                     LanSend.BadHash -> { db.clearHash(p.mediaId); db.setError(p.mediaId, "changed while sending"); return false }
-                    LanSend.Busy -> Thread.sleep(2000)
+                    LanSend.Busy -> Thread.sleep(8000) // the PC frees a stalled transfer after ~15 s
                 }
             } catch (e: UploadInterrupted) {
                 throw e
@@ -314,6 +328,7 @@ class SyncRunner(private val context: Context) {
         settings.lastDirect = pass.direct
         settings.lastCloud = pass.cloud
         settings.waiting = summarizeWaits(pass.waits)
+        settings.waitingCount = pass.waits.values.sum()
         settings.lastError = null
         settings.lastRunAt = System.currentTimeMillis() / 1000
     }
@@ -355,9 +370,10 @@ class SyncRunner(private val context: Context) {
     private fun stage(key: ByteArray, p: Photo, dest: File) {
         val tmp = File(stagingDir, "${p.objectId}.tmp")
         try {
-            tmp.outputStream().buffered().use { out -> Crypto.encrypt(key, p.name, null, { openOriginal(p) }, out) }
+            val meta = tmp.outputStream().buffered().use { out -> Crypto.encrypt(key, p.name, null, { openOriginal(p) }, out) }
             if (!tmp.renameTo(dest)) throw IOException("could not stage ${p.name}")
             db.setStage(p.mediaId, dest.length())
+            db.setSize(p.mediaId, meta.size) // exactly what was backed up, for the safe-to-delete check
         } finally {
             tmp.delete()
         }
@@ -377,6 +393,11 @@ class SyncRunner(private val context: Context) {
     }
 
     companion object {
+        /** Only one pass at a time (see SyncWorker). */
+        val running = java.util.concurrent.atomic.AtomicBoolean(false)
+        /** A job fired while a pass was running; the running pass queues one more when it ends. */
+        @Volatile var rerunRequested = false
+
         /** Bytes currently held in the cloud inbox, as last reported by the Worker. */
         @Volatile var lastInboxBytes: Long = 0
 

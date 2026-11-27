@@ -53,7 +53,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -163,6 +163,10 @@ fun Home(vm: MainViewModel, ui: UiState) {
         vm.refresh()
         vm.backUpNow()
     }
+    // Ask for photo access as soon as the home screen first appears, instead of waiting for a tap.
+    LaunchedEffect(Unit) {
+        if (MediaAccess.current(ctx) == MediaAccess.NONE) permLauncher.launch(MediaAccess.requestList(Build.VERSION.SDK_INT))
+    }
     // One system confirmation per batch of 500 photos.
     lateinit var deleteLauncher: androidx.activity.result.ActivityResultLauncher<IntentSenderRequest>
     deleteLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { r ->
@@ -261,7 +265,7 @@ fun HomeScreen(ui: UiState, a: HomeActions) {
             Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("${c.synced} safe to delete", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    Text("Verified on your PC. Deleting frees about ${formatBytes(c.syncedBytes)} on this phone.")
+                    Text("Verified on your PC. Moves about ${formatBytes(c.syncedBytes)} to the phone's trash, where it can still be restored for 30 days.")
                     Button(onClick = a.freeUp) { Text("Free up space") }
                 }
             }

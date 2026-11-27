@@ -61,8 +61,15 @@ enum Cmd {
     },
     /// Show what is waiting in the inbox and whether the phone is still backing up.
     Status,
-    /// Print the key for pairing the phone.
-    Pair,
+    /// Show the pairing QR code for the phone.
+    Pair {
+        /// Your terminal has a light background (the default assumes a dark one).
+        #[arg(long)]
+        light: bool,
+        /// Also write the QR code as an image (open it in a browser) for consoles that garble it.
+        #[arg(long, value_name = "FILE")]
+        svg: Option<PathBuf>,
+    },
     /// Encrypt a file into the inbox, as the phone will (for testing).
     Upload { file: PathBuf },
 }
@@ -204,7 +211,7 @@ fn main() -> Result<()> {
             write_private(&path, &serde_json::to_vec_pretty(&cfg)?)?;
             println!("Created {path:?}\nLibrary key (keep a copy somewhere safe): {}", cfg.key);
         }
-        Cmd::Pair => {
+        Cmd::Pair { light, svg } => {
             let (cfg, _) = load(&path)?;
             // This payload is what the QR code will carry: key + Worker URL + phone token.
             let identity = lan::load_or_create_identity(&state_dir(&path)?)?;
@@ -221,11 +228,25 @@ fn main() -> Result<()> {
                 bail!("no phone token in config: re-run init with --phone-token (or CLOUDWIND_PHONE_TOKEN)");
             }
             let code = format!("cloudwind://pair/{}", URL_SAFE_NO_PAD.encode(payload.to_string()));
+            // Scanners expect dark modules on a light background. On a dark terminal that means drawing
+            // the *light* parts with block characters and leaving the dark parts as the terminal colour.
+            use qrcode::render::unicode::Dense1x2;
+            let (dark, bg) = if *light { (Dense1x2::Dark, Dense1x2::Light) } else { (Dense1x2::Light, Dense1x2::Dark) };
             let qr = qrcode::QrCode::new(code.as_bytes())?
-                .render::<qrcode::render::unicode::Dense1x2>()
+                .render::<Dense1x2>()
+                .dark_color(dark)
+                .light_color(bg)
                 .quiet_zone(true)
                 .build();
-            println!("{qr}\nScan this with the Cloudwind app. It contains your encryption key: don't share a screenshot.\n\nOr paste this code into the app:\n{code}");
+            if let Some(path) = svg {
+                let image = qrcode::QrCode::new(code.as_bytes())?
+                    .render::<qrcode::render::svg::Color>()
+                    .min_dimensions(400, 400)
+                    .build();
+                fs::write(path, image)?;
+                eprintln!("Wrote {} (it contains your key: delete it after pairing).", path.display());
+            }
+            println!("{qr}\nScan this with the Cloudwind app (if it won't scan, try `cloudwind pair --light`). It contains your encryption key: don't share a screenshot.\n\nOr paste this code into the app:\n{code}");
         }
         Cmd::Sync => {
             let (cfg, key) = load(&path)?;

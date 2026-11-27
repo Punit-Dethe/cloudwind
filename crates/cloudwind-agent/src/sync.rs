@@ -111,12 +111,16 @@ pub fn run(inbox: &dyn Inbox, key: &LibraryKey, library: &Path, state: &State) -
 /// hash claim makes sure exactly one copy is stored even if both deliver the same bytes at once.
 /// `Ok(None)` means it was a duplicate and `tmp` was discarded.
 pub fn place(library: &Path, state: &State, tmp: &Path, name: &str, modified: Option<u64>, sha256: &str) -> Result<Option<PathBuf>> {
+    // Choosing a free name and moving into it must be one step: otherwise a cloud pull and a direct
+    // arrival with the same file name could pick the same path and one would replace the other.
+    static PLACING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = PLACING.lock().unwrap_or_else(|e| e.into_inner());
     if !state.claim(sha256)? {
         let _ = fs::remove_file(tmp);
         return Ok(None);
     }
     let dest = unique_path(library, &safe_name(name));
-    if let Err(e) = move_file(tmp, &dest) {
+    if let Err(e) = move_file(tmp, &dest, sha256) {
         state.unclaim(sha256);
         return Err(e);
     }
@@ -128,15 +132,19 @@ pub fn place(library: &Path, state: &State, tmp: &Path, name: &str, modified: Op
     Ok(Some(dest))
 }
 
-/// Rename when possible (same drive); otherwise copy then delete (library on another drive).
-fn move_file(from: &Path, to: &Path) -> Result<()> {
+/// Rename when possible (same drive); otherwise copy to a hidden name on the library's drive, then rename,
+/// so a photo app never sees a half-copied file.
+fn move_file(from: &Path, to: &Path, sha256: &str) -> Result<()> {
     if fs::rename(from, to).is_ok() {
         return Ok(());
     }
-    let staging = to.with_file_name(format!(".cloudwind-move-{}", std::process::id()));
+    let staging = to.with_file_name(format!(".cloudwind-incoming-{sha256}.tmp"));
     fs::copy(from, &staging)?;
-    fs::rename(&staging, to)?;
-    fs::remove_file(from)?;
+    if let Err(e) = fs::rename(&staging, to) {
+        let _ = fs::remove_file(&staging);
+        return Err(e.into());
+    }
+    let _ = fs::remove_file(from);
     Ok(())
 }
 
@@ -145,7 +153,7 @@ fn pull_one(inbox: &dyn Inbox, key: &LibraryKey, library: &Path, state: &State, 
     let dl = state.tmp_path(id);
     inbox.fetch(id, &dl)?;
 
-    let tmp = library.join(format!(".cloudwind-{id}.part"));
+    let tmp = state.tmp_path(id).with_extension("plain");
     let decrypted = (|| {
         let out = BufWriter::new(File::create(&tmp)?);
         Ok::<_, anyhow::Error>(decrypt(key, File::open(&dl)?, out)?)

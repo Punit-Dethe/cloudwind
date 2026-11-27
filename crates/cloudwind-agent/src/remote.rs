@@ -54,7 +54,15 @@ struct Created {
 
 impl RemoteInbox {
     pub fn new(base: &str, token: &str) -> Self {
-        Self::with_agent(base, token, ureq::AgentBuilder::new().try_proxy_from_env(true).build())
+        // Without timeouts a connection that died while the PC slept would block the daemon forever.
+        // `timeout_read` is per read call, so long downloads are fine as long as bytes keep flowing.
+        let agent = ureq::AgentBuilder::new()
+            .try_proxy_from_env(true)
+            .timeout_connect(Duration::from_secs(15))
+            .timeout_read(Duration::from_secs(60))
+            .timeout_write(Duration::from_secs(60))
+            .build();
+        Self::with_agent(base, token, agent)
     }
 
     pub fn with_agent(base: &str, token: &str, agent: ureq::Agent) -> Self {

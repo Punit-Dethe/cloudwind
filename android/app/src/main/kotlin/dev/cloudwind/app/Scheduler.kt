@@ -23,6 +23,7 @@ object Scheduler {
     private const val ON_CHANGE = "cloudwind-on-change"
     private const val NOW = "cloudwind-now"
     private const val CONTINUE = "cloudwind-continue"
+    const val TAG_TRIGGER = "cloudwind-trigger"
 
     /**
      * Jobs no longer carry Wi-Fi/charging rules: the runner applies them per file, so small photos still go
@@ -52,13 +53,18 @@ object Scheduler {
         armTrigger(context)
     }
 
-    /** One-shot work that fires when the media library changes. SyncWorker re-arms it after each run. */
-    fun armTrigger(context: Context) {
+    /**
+     * One-shot work that fires when the media library changes. Only the trigger job itself appends its
+     * successor (it is running, so the new one waits behind it). Everyone else uses KEEP: appending from
+     * outside would grow a chain of waiting trigger jobs by one every time.
+     */
+    fun armTrigger(context: Context, fromTriggerJob: Boolean = false) {
         val s = Settings(context)
         WorkManager.getInstance(context).enqueueUniqueWork(
-            ON_CHANGE, ExistingWorkPolicy.APPEND_OR_REPLACE,
+            ON_CHANGE, if (fromTriggerJob) ExistingWorkPolicy.APPEND_OR_REPLACE else ExistingWorkPolicy.KEEP,
             OneTimeWorkRequestBuilder<SyncWorker>()
                 .setConstraints(constraints(s, trigger = true))
+                .addTag(TAG_TRIGGER)
                 .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 1, TimeUnit.MINUTES)
                 .build(),
         )
@@ -96,14 +102,42 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         val ctx = applicationContext
+        val fromTrigger = tags.contains(Scheduler.TAG_TRIGGER)
+        try {
+            // One pass at a time. Periodic, new-photo, "back up now" and continuation jobs can all fire
+            // together; two passes would stage the same file twice and clean up each other's temp files.
+            if (!SyncRunner.running.compareAndSet(false, true)) {
+                SyncRunner.rerunRequested = true // the running pass will queue one more when it finishes
+                return@withContext Result.success()
+            }
+            try {
+                runPass(ctx)
+            } finally {
+                SyncRunner.running.set(false)
+                if (SyncRunner.rerunRequested) { SyncRunner.rerunRequested = false; Scheduler.continueSoon(ctx) }
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // Never let an unexpected error kill the schedule; show it and try again later.
+            Settings(ctx).lastError = "Unexpected error: ${e.javaClass.simpleName}${e.message?.let { ": $it" } ?: ""}"
+            Result.retry()
+        } finally {
+            Scheduler.armTrigger(ctx, fromTriggerJob = fromTrigger)
+        }
+    }
+
+    private suspend fun runPass(ctx: Context): Result {
         val runner = SyncRunner(ctx)
         val budget = FgBudget(ctx)
+        val settings = Settings(ctx)
 
-        // Foreground time is rationed (Android 15 allows 6 h per 24 h). Use it only for real work and
-        // only while there is allowance left; otherwise run as an ordinary background job.
+        // Foreground time is rationed (Android 15 allows 6 h per 24 h). Use it only when something can
+        // actually be sent (not for files that are just waiting for Wi-Fi or home) and allowance is left.
         var fgStart = 0L
         var budgetMs = 8 * 60_000L // plain background jobs get about 10 minutes
-        if (runner.pendingCount() > 0 && budget.remainingMs() > 20 * 60_000L) {
+        val sendable = runner.pendingCount() - settings.waitingCount
+        if (sendable > 0 && budget.remainingMs() > 20 * 60_000L) {
             try {
                 setForeground(getForegroundInfo())
                 fgStart = System.currentTimeMillis()
@@ -123,8 +157,7 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
             if (fgStart != 0L) budget.record(fgStart, System.currentTimeMillis())
         }
 
-        Scheduler.armTrigger(ctx)
-        when (outcome) {
+        return when (outcome) {
             is SyncRunner.Outcome.Retry -> Result.retry()
             is SyncRunner.Outcome.Paused -> {
                 // Out of time with work left: keep going in a fresh run. If the OS stopped us, it reschedules.

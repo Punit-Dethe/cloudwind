@@ -68,15 +68,35 @@ class Settings(context: Context) {
         get() = sp.getString("waiting", null)
         set(v) = sp.edit().putString("waiting", v).apply()
 
+    /** How many files the last pass held back; lets the worker skip foreground mode when nothing can move. */
+    var waitingCount: Int
+        get() = sp.getInt("waiting_count", 0)
+        set(v) = sp.edit().putInt("waiting_count", v).apply()
+
     /** false = only DCIM (camera); true = every folder with photos/videos. */
     var allFolders: Boolean
         get() = sp.getBoolean("all_folders", false)
-        set(v) = sp.edit().putBoolean("all_folders", v).apply()
+        set(v) { sp.edit().putBoolean("all_folders", v).apply(); resetScan() }
+
+    // ---- incremental scanning: MediaStore's per-volume change counter ----
+    /** Last MediaStore generation scanned on a volume, valid only for the same MediaStore version. */
+    fun scanGeneration(volume: String, version: String): Long =
+        if (sp.getString("scan_ver_$volume", null) == version) sp.getLong("scan_gen_$volume", 0) else 0
+
+    fun setScanGeneration(volume: String, version: String, gen: Long) =
+        sp.edit().putString("scan_ver_$volume", version).putLong("scan_gen_$volume", gen).apply()
+
+    /** Forget scan progress so the next pass looks at everything again (new date range or folders). */
+    fun resetScan() {
+        val e = sp.edit()
+        sp.all.keys.filter { it.startsWith("scan_gen_") || it.startsWith("scan_ver_") }.forEach { e.remove(it) }
+        e.apply()
+    }
 
     /** Only media added at/after this time (epoch seconds) is backed up. Set at pairing. */
     var since: Long
         get() = sp.getLong("since", Long.MAX_VALUE)
-        set(v) = sp.edit().putLong("since", v).apply()
+        set(v) { sp.edit().putLong("since", v).apply(); resetScan() }
 
     var lastError: String?
         get() = sp.getString("last_error", null)

@@ -5,11 +5,15 @@
 //! offset to resume from). Files arrive raw over TLS and are verified by SHA-256 before being placed.
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
+    time::{Duration, Instant},
 };
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -126,24 +130,91 @@ fn valid_sha(s: &str) -> bool {
 
 // ---- the receiver ----------------------------------------------------------------------------
 
+/// Who currently owns the partial file for a hash, and when it last made progress.
+struct Slot {
+    gen: u64,
+    last: Instant,
+}
+
 pub struct Lan {
     library: PathBuf,
     state: Arc<State>,
     token: String,
     link: Option<Arc<dyn CloudLink>>,
-    in_flight: Mutex<HashSet<String>>,
+    flights: Mutex<HashMap<String, Slot>>,
+    next_gen: AtomicU64,
+    /// A transfer with no progress for this long can be taken over by a retry. If the phone vanished
+    /// mid-send (Wi-Fi gone, no clean close), its receiving thread may wait forever; without takeover
+    /// that file would answer "busy" to every retry.
+    stale_after: Duration,
+    cloud_cache: Mutex<Option<(Instant, HashSet<String>)>>,
 }
 
-struct Flight<'a>(&'a Mutex<HashSet<String>>, String);
+/// Releases ownership when a transfer ends, but only if it still owns the slot.
+struct Flight<'a> {
+    lan: &'a Lan,
+    sha: String,
+    gen: u64,
+}
 impl Drop for Flight<'_> {
     fn drop(&mut self) {
-        self.0.lock().unwrap().remove(&self.1);
+        let mut f = self.lan.flights.lock().unwrap_or_else(|e| e.into_inner());
+        if f.get(&self.sha).is_some_and(|s| s.gen == self.gen) {
+            f.remove(&self.sha);
+        }
     }
 }
 
 impl Lan {
     pub fn new(library: PathBuf, state: Arc<State>, key: &LibraryKey, link: Option<Arc<dyn CloudLink>>) -> Self {
-        Self { library, state, token: key.lan_auth_token(), link, in_flight: Mutex::new(HashSet::new()) }
+        Self {
+            library,
+            state,
+            token: key.lan_auth_token(),
+            link,
+            flights: Mutex::new(HashMap::new()),
+            next_gen: AtomicU64::new(1),
+            stale_after: Duration::from_secs(15),
+            cloud_cache: Mutex::new(None),
+        }
+    }
+
+    /// Take ownership of a hash's partial file, or None if a live transfer holds it.
+    fn acquire(&self, sha: &str) -> Option<u64> {
+        let mut f = self.flights.lock().unwrap_or_else(|e| e.into_inner());
+        if f.get(sha).is_some_and(|s| s.last.elapsed() < self.stale_after) {
+            return None;
+        }
+        let gen = self.next_gen.fetch_add(1, Ordering::Relaxed);
+        f.insert(sha.to_string(), Slot { gen, last: Instant::now() });
+        Some(gen)
+    }
+
+    /// Append a chunk only while we still own the slot. A taken-over (stale) transfer writes nothing.
+    fn write_owned(&self, sha: &str, gen: u64, out: &mut File, chunk: &[u8]) -> Result<bool> {
+        let mut f = self.flights.lock().unwrap_or_else(|e| e.into_inner());
+        match f.get_mut(sha) {
+            Some(s) if s.gen == gen => {
+                s.last = Instant::now();
+                out.write_all(chunk)?;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    /// Object ids waiting in the cloud. Cached briefly: the phone plans in batches.
+    fn cloud_pending(&self) -> HashSet<String> {
+        let Some(link) = &self.link else { return HashSet::new() };
+        let mut c = self.cloud_cache.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((at, ids)) = c.as_ref() {
+            if at.elapsed() < Duration::from_secs(20) {
+                return ids.clone();
+            }
+        }
+        let ids = link.pending_ids().unwrap_or_default();
+        *c = Some((Instant::now(), ids.clone()));
+        ids
     }
 
     fn part_len(&self, sha: &str) -> u64 {
@@ -157,7 +228,7 @@ impl Lan {
     }
 
     pub fn plan(&self, items: &[PlanItem]) -> PlanReply {
-        let in_cloud = self.link.as_ref().and_then(|l| l.pending_ids().ok()).unwrap_or_default();
+        let in_cloud = self.cloud_pending();
         let mut r = PlanReply::default();
         for it in items {
             if !valid_sha(&it.sha256) {
@@ -194,10 +265,8 @@ impl Lan {
             self.cloud_done(object);
             return Ok(Received::Stored { path: None });
         }
-        if !self.in_flight.lock().unwrap().insert(sha256.to_string()) {
-            return Ok(Received::Busy);
-        }
-        let _flight = Flight(&self.in_flight, sha256.to_string());
+        let Some(gen) = self.acquire(sha256) else { return Ok(Received::Busy) };
+        let _flight = Flight { lan: self, sha: sha256.to_string(), gen };
 
         let part = self.state.lan_part_path(sha256);
         let have = self.part_len(sha256);
@@ -213,7 +282,11 @@ impl Lan {
         loop {
             match limited.read(&mut buf) {
                 Ok(0) => break,
-                Ok(n) => out.write_all(&buf[..n])?,
+                Ok(n) => {
+                    if !self.write_owned(sha256, gen, &mut out, &buf[..n])? {
+                        return Ok(Received::Busy); // a retry took over while we were stalled
+                    }
+                }
                 Err(_) => break, // the phone dropped: keep what arrived, it can resume
             }
         }
@@ -458,6 +531,31 @@ mod tests {
         assert_eq!(r, Received::Stored { path: None });
         assert_eq!(fs::read_dir(&e.lib).unwrap().count(), 1);
         assert_eq!(*e.cloud.synced.lock().unwrap(), vec!["obj-x"]);
+    }
+
+    #[test]
+    fn a_stalled_transfer_is_taken_over_and_can_never_write_again() {
+        let mut e = env();
+        e.lan.stale_after = Duration::from_millis(50);
+        let data: Vec<u8> = (0..20_000u32).map(|i| (i % 249) as u8).collect();
+        let s = sha(&data);
+
+        // A transfer starts and then goes silent (the phone lost Wi-Fi without closing the connection).
+        let stalled = e.lan.acquire(&s).unwrap();
+        assert_eq!(
+            e.lan.receive(&s, 20_000, 0, "v.mp4", None, None, &mut Cursor::new(&data)).unwrap(),
+            Received::Busy,
+            "a live transfer is not interrupted"
+        );
+        std::thread::sleep(Duration::from_millis(80));
+
+        // The retry takes over and completes.
+        let r = e.lan.receive(&s, 20_000, 0, "v.mp4", None, None, &mut Cursor::new(&data)).unwrap();
+        assert!(matches!(r, Received::Stored { path: Some(_) }), "{r:?}");
+
+        // If the stalled thread wakes up later, it is not allowed to write.
+        let mut f = OpenOptions::new().create(true).append(true).open(e.lan.state.lan_part_path(&s)).unwrap();
+        assert!(!e.lan.write_owned(&s, stalled, &mut f, b"late bytes").unwrap());
     }
 
     #[test]

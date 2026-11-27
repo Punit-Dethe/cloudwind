@@ -202,5 +202,24 @@ class PhotoDb(context: Context) : SQLiteOpenHelper(context.applicationContext, "
             buildSet { while (c.moveToNext()) add(c.getString(0)) }
         }
 
+    fun <T> inTransaction(block: () -> T): T {
+        val db = writableDatabase
+        db.beginTransaction()
+        try { return block().also { db.setTransactionSuccessful() } } finally { db.endTransaction() }
+    }
+
+    /** Record the exact number of bytes that were backed up, so "safe to delete" can check nothing changed since. */
+    fun setSize(mediaId: Long, size: Long) {
+        writableDatabase.execSQL("UPDATE photos SET size=? WHERE media_id=?", arrayOf(size, mediaId))
+    }
+
+    /** The file changed after it was backed up: back up the new version as a new object. */
+    fun requeue(mediaId: Long, size: Long, newObjectId: String) {
+        writableDatabase.execSQL(
+            "UPDATE photos SET state='pending', size=?, object_id=?, uploaded_at=NULL, synced_at=NULL, sha256=NULL, hash_size=NULL, stage_size=NULL, resume=NULL, error=NULL WHERE media_id=?",
+            arrayOf(size, newObjectId, mediaId),
+        )
+    }
+
     fun clear() = writableDatabase.execSQL("DELETE FROM photos")
 }
