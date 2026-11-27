@@ -13,7 +13,7 @@ Full plan: [docs/PLAN.md](docs/PLAN.md)
 - [x] `cloudwind` agent: `init`, `pair`, `sync`, `upload` (phone simulator), local-folder or Worker inbox
 - [x] Cloudflare Worker (`worker/`): R2 inbox + D1 status, phone/agent token roles, multipart uploads, daily purge after the grace period
 - [x] Verified end to end on Cloudflare: 300 KB photo and 70 MB video (multipart) round-trip byte-identical
-- [x] Android app (Kotlin + Compose): QR/paste pairing, Keystore-wrapped key, MediaStore scan, encrypt + upload, WorkManager (periodic + new-photo trigger + foreground for backlogs), status back from the PC, batch "Free up space" with one system prompt per 500 photos. **Not yet compiled or run on a device** — see below
+- [x] Android app (Kotlin + Compose): QR/paste pairing, Keystore-wrapped key, MediaStore scan, encrypt + upload, WorkManager (periodic + new-photo trigger + foreground for backlogs), status back from the PC, batch "Free up space" with one system prompt per 500 photos. Compiles to a debug APK; **not yet run on a real phone**
 - [x] `cloudwind pair` prints a QR code for the phone
 - [ ] Tray icon, start at login, OS keychain, QR pairing, Immich/PhotoPrism presets
 
