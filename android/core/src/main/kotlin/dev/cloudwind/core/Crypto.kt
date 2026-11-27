@@ -1,14 +1,9 @@
 package dev.cloudwind.core
 
 import java.io.ByteArrayOutputStream
-import java.io.EOFException
 import java.io.InputStream
 import java.io.OutputStream
-import java.security.GeneralSecurityException
 import java.security.MessageDigest
-import javax.crypto.Cipher
-import javax.crypto.spec.IvParameterSpec
-import javax.crypto.spec.SecretKeySpec
 
 /**
  * Cloudwind file format, byte-compatible with the Rust `cloudwind-core` crate.
@@ -19,8 +14,8 @@ import javax.crypto.spec.SecretKeySpec
  * plaintext = meta_len u32 BE | meta JSON | file bytes
  * ```
  *
- * XChaCha20-Poly1305 is built from HChaCha20 plus the platform's ChaCha20-Poly1305
- * (JDK 11+, Android 9+). Each chunk's 24-byte nonce is `nonce19 | counter u32 BE | last u8`.
+ * XChaCha20-Poly1305 is built from HChaCha20 plus an in-house ChaCha20-Poly1305
+ * (pure Kotlin, see ChaChaPoly). Each chunk's 24-byte nonce is `nonce19 | counter u32 BE | last u8`.
  */
 object Crypto {
     private val MAGIC = byteArrayOf('C'.code.toByte(), 'W'.code.toByte(), 'N'.code.toByte(), 'D'.code.toByte())
@@ -66,13 +61,11 @@ object Crypto {
 
     // ---- XChaCha20-Poly1305 ----------------------------------------------
 
-    private fun xchacha(mode: Int, key: ByteArray, nonce24: ByteArray, input: ByteArray, len: Int): ByteArray {
+    private fun xchacha(encrypt: Boolean, key: ByteArray, nonce24: ByteArray, input: ByteArray, len: Int): ByteArray {
         val sub = hChaCha20(key, nonce24.copyOfRange(0, 16))
         val iv = ByteArray(12)
         System.arraycopy(nonce24, 16, iv, 4, 8)
-        val c = Cipher.getInstance("ChaCha20-Poly1305")
-        c.init(mode, SecretKeySpec(sub, "ChaCha20"), IvParameterSpec(iv))
-        return c.doFinal(input, 0, len)
+        return if (encrypt) ChaChaPoly.seal(sub, iv, input, len) else ChaChaPoly.open(sub, iv, input, len)
     }
 
     private fun chunkNonce(prefix: ByteArray, counter: Int, last: Boolean): ByteArray {
@@ -159,7 +152,7 @@ object Crypto {
             val next = ByteArray(chunk)
             val nlen = if (cur == chunk) readFull(input, next) else 0
             val last = nlen == 0
-            out.write(xchacha(Cipher.ENCRYPT_MODE, key, chunkNonce(nonce, counter, last), buf, cur))
+            out.write(xchacha(true, key, chunkNonce(nonce, counter, last), buf, cur))
             if (last) break
             buf = next; cur = nlen; counter++
         }
@@ -217,11 +210,7 @@ object Crypto {
             val next = ByteArray(ctLen)
             val nlen = if (cur == ctLen) readFull(src, next) else 0
             val last = nlen == 0
-            val plain = try {
-                xchacha(Cipher.DECRYPT_MODE, key, chunkNonce(nonce, counter, last), buf, cur)
-            } catch (e: GeneralSecurityException) {
-                throw CryptoException("decryption failed (wrong key or corrupted data)")
-            }
+            val plain = xchacha(false, key, chunkNonce(nonce, counter, last), buf, cur)
             route(plain)
             if (last) break
             buf = next; cur = nlen; counter++
