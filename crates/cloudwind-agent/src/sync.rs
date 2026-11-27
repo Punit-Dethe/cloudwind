@@ -81,7 +81,7 @@ fn now() -> u64 {
 
 /// Pull everything pending: download (resumable), decrypt, verify the hash, move into place,
 /// then write a receipt. A file is never visible in `library` until it verifies.
-pub fn run(inbox: &dyn Inbox, key: &LibraryKey, library: &Path, state: &mut State) -> Result<Report> {
+pub fn run(inbox: &dyn Inbox, key: &LibraryKey, library: &Path, state: &State) -> Result<Report> {
     fs::create_dir_all(library)?;
     let mut report = Report::default();
     for id in inbox.pending()? {
@@ -107,8 +107,41 @@ pub fn run(inbox: &dyn Inbox, key: &LibraryKey, library: &Path, state: &mut Stat
     Ok(report)
 }
 
+/// Move a verified file into the library. Both routes (cloud pull and direct LAN) end here, so the
+/// hash claim makes sure exactly one copy is stored even if both deliver the same bytes at once.
+/// `Ok(None)` means it was a duplicate and `tmp` was discarded.
+pub fn place(library: &Path, state: &State, tmp: &Path, name: &str, modified: Option<u64>, sha256: &str) -> Result<Option<PathBuf>> {
+    if !state.claim(sha256)? {
+        let _ = fs::remove_file(tmp);
+        return Ok(None);
+    }
+    let dest = unique_path(library, &safe_name(name));
+    if let Err(e) = move_file(tmp, &dest) {
+        state.unclaim(sha256);
+        return Err(e);
+    }
+    if let Some(t) = modified {
+        if let Ok(f) = File::options().write(true).open(&dest) {
+            let _ = f.set_modified(UNIX_EPOCH + std::time::Duration::from_secs(t));
+        }
+    }
+    Ok(Some(dest))
+}
+
+/// Rename when possible (same drive); otherwise copy then delete (library on another drive).
+fn move_file(from: &Path, to: &Path) -> Result<()> {
+    if fs::rename(from, to).is_ok() {
+        return Ok(());
+    }
+    let staging = to.with_file_name(format!(".cloudwind-move-{}", std::process::id()));
+    fs::copy(from, &staging)?;
+    fs::rename(&staging, to)?;
+    fs::remove_file(from)?;
+    Ok(())
+}
+
 /// `Ok(Some(path))` stored a new file, `Ok(None)` it was a duplicate (acknowledged, not stored again).
-fn pull_one(inbox: &dyn Inbox, key: &LibraryKey, library: &Path, state: &mut State, id: &str) -> Result<Option<PathBuf>> {
+fn pull_one(inbox: &dyn Inbox, key: &LibraryKey, library: &Path, state: &State, id: &str) -> Result<Option<PathBuf>> {
     let dl = state.tmp_path(id);
     inbox.fetch(id, &dl)?;
 
@@ -126,20 +159,7 @@ fn pull_one(inbox: &dyn Inbox, key: &LibraryKey, library: &Path, state: &mut Sta
         }
     };
 
-    let stored = if state.has_seen(&meta.sha256) {
-        let _ = fs::remove_file(&tmp);
-        None
-    } else {
-        let dest = unique_path(library, &safe_name(&meta.name));
-        fs::rename(&tmp, &dest)?;
-        if let Some(t) = meta.modified {
-            if let Ok(f) = File::options().write(true).open(&dest) {
-                let _ = f.set_modified(UNIX_EPOCH + std::time::Duration::from_secs(t));
-            }
-        }
-        state.record_seen(&meta.sha256)?;
-        Some(dest)
-    };
+    let stored = place(library, state, &tmp, &meta.name, meta.modified, &meta.sha256)?;
     let _ = fs::remove_file(&dl);
     inbox.put_receipt(id, &Receipt { sha256: meta.sha256, synced_at: now() })?;
     Ok(stored)
@@ -172,29 +192,29 @@ mod tests {
 
     #[test]
     fn syncs_verifies_and_is_idempotent() {
-        let mut e = env();
+        let e = env();
         let key = LibraryKey::generate();
         let id = upload(&e.inbox, &key, "IMG_1.jpg", b"pixels");
         upload(&e.inbox, &key, "IMG_1.jpg", b"other pixels"); // same name, different file
 
-        let r = run(&e.inbox, &key, &e.lib, &mut e.state).unwrap();
+        let r = run(&e.inbox, &key, &e.lib, &e.state).unwrap();
         assert_eq!(r.synced.len(), 2);
         assert!(r.failed.is_empty());
         let total = fs::read(e.lib.join("IMG_1.jpg")).unwrap().len() + fs::read(e.lib.join("IMG_1 (1).jpg")).unwrap().len();
         assert_eq!(total, 6 + 12);
         assert!(e.inbox.root.join(format!("{id}.synced.json")).exists());
 
-        assert_eq!(run(&e.inbox, &key, &e.lib, &mut e.state).unwrap(), Report::default());
+        assert_eq!(run(&e.inbox, &key, &e.lib, &e.state).unwrap(), Report::default());
     }
 
     #[test]
     fn same_bytes_uploaded_twice_are_stored_once_but_both_acknowledged() {
-        let mut e = env();
+        let e = env();
         let key = LibraryKey::generate();
         // A re-paired phone or an overlapping "back up older photos" uploads the same photo again.
         let a = upload(&e.inbox, &key, "IMG_7.jpg", b"same pixels");
         let b = upload(&e.inbox, &key, "IMG_7.jpg", b"same pixels");
-        let r = run(&e.inbox, &key, &e.lib, &mut e.state).unwrap();
+        let r = run(&e.inbox, &key, &e.lib, &e.state).unwrap();
         assert_eq!((r.synced.len(), r.duplicates), (1, 1));
         let stored: Vec<_> = fs::read_dir(&e.lib).unwrap().collect();
         assert_eq!(stored.len(), 1);
@@ -203,24 +223,24 @@ mod tests {
         }
         // Remembered across runs, too.
         let c = upload(&e.inbox, &key, "IMG_7 copy.jpg", b"same pixels");
-        let mut again = State::load(&e._d.path().join("state")).unwrap();
-        let r = run(&e.inbox, &key, &e.lib, &mut again).unwrap();
+        let again = State::load(&e._d.path().join("state")).unwrap();
+        let r = run(&e.inbox, &key, &e.lib, &again).unwrap();
         assert_eq!((r.synced.len(), r.duplicates), (0, 1));
         assert!(e.inbox.root.join(format!("{c}.synced.json")).exists());
     }
 
     #[test]
     fn bad_file_leaves_nothing_behind_and_backs_off() {
-        let mut e = env();
+        let e = env();
         let id = upload(&e.inbox, &LibraryKey::generate(), "a.jpg", b"x");
-        let r = run(&e.inbox, &LibraryKey::generate(), &e.lib, &mut e.state).unwrap();
+        let r = run(&e.inbox, &LibraryKey::generate(), &e.lib, &e.state).unwrap();
         assert_eq!(r.failed.len(), 1);
         assert!(fs::read_dir(&e.lib).unwrap().next().is_none());
         assert!(!e.inbox.root.join(format!("{id}.synced.json")).exists());
         assert!(!e.state.tmp_path(&id).exists(), "corrupt download is discarded");
 
         // Immediately re-running must not hammer the same object.
-        let r = run(&e.inbox, &LibraryKey::generate(), &e.lib, &mut e.state).unwrap();
+        let r = run(&e.inbox, &LibraryKey::generate(), &e.lib, &e.state).unwrap();
         assert_eq!((r.failed.len(), r.backed_off), (0, 1));
     }
 

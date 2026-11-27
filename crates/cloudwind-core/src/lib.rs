@@ -63,6 +63,15 @@ impl LibraryKey {
         rand::rngs::OsRng.fill_bytes(&mut k);
         Self(k)
     }
+    /// Bearer token for the LAN link, derived from the library key so there is nothing extra to pair.
+    /// Only a phone that holds the key can compute it. Hex, 64 chars.
+    pub fn lan_auth_token(&self) -> String {
+        use hmac::{Hmac, Mac};
+        let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(&self.0).expect("hmac accepts any key length");
+        mac.update(b"cloudwind/lan-auth/v1");
+        hex(&mac.finalize().into_bytes())
+    }
+
     pub fn to_base64(&self) -> String {
         use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
         URL_SAFE_NO_PAD.encode(self.0)
@@ -346,6 +355,19 @@ mod tests {
         let mut ct = Vec::new();
         encrypt_with_meta(&key, &meta, &b"x"[..], &mut ct, 64).unwrap();
         assert!(!ct.windows(6).any(|w| w == b"secret"));
+    }
+}
+
+#[cfg(test)]
+mod lan_token {
+    use super::*;
+
+    /// Same vector is asserted in the Kotlin tests: the two sides must derive identical tokens.
+    #[test]
+    fn lan_token_is_stable_across_implementations() {
+        let key = LibraryKey::from_base64("AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8").unwrap();
+        assert_eq!(key.lan_auth_token(), "a705ba1efe81f5e88a6bde701f73204c7dade81427253c5881607ff21720cbcc");
+        assert_ne!(key.lan_auth_token(), LibraryKey::generate().lan_auth_token());
     }
 }
 

@@ -71,6 +71,12 @@ impl RemoteInbox {
         Ok(self.req("GET", "/v1/health").call().context("reading inbox health")?.into_json()?)
     }
 
+    /// Publish the (encrypted) LAN address hint the phone reads to find this PC.
+    pub fn put_lan_hint(&self, payload: &str) -> Result<()> {
+        self.req("PUT", "/v1/lan").send_json(serde_json::json!({ "payload": payload })).context("publishing LAN hint")?;
+        Ok(())
+    }
+
     /// Upload an encrypted file as the phone would. Returns the object id.
     pub fn upload(&self, id: &str, file: &Path) -> Result<()> {
         let size = file.metadata()?.len();
@@ -235,5 +241,14 @@ mod tests {
         assert_eq!(reqs.len(), 2, "one failed attempt, one resume");
         assert_eq!(reqs[0], None);
         assert_eq!(reqs[1], Some("100000".to_string()), "resumed at the byte where it stopped");
+    }
+}
+
+impl crate::lan::CloudLink for RemoteInbox {
+    fn pending_ids(&self) -> Result<std::collections::HashSet<String>> {
+        Ok(Inbox::pending(self)?.into_iter().collect())
+    }
+    fn mark_synced(&self, id: &str) -> Result<()> {
+        self.put_receipt(id, &Receipt { sha256: String::new(), synced_at: 0 })
     }
 }

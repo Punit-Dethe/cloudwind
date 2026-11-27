@@ -1,9 +1,10 @@
 mod inbox;
+mod lan;
 mod remote;
 mod state;
 mod sync;
 
-use std::{fs, path::PathBuf, time::UNIX_EPOCH};
+use std::{fs, path::PathBuf, sync::Arc, time::{Duration, UNIX_EPOCH}};
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
@@ -45,6 +46,19 @@ enum Cmd {
     },
     /// Pull new photos from the inbox into the library.
     Sync,
+    /// Run continuously: receive directly from the phone on the home network, pull from the cloud,
+    /// and keep the phone able to find this PC. This is what to leave running (tray/start-at-login later).
+    Run {
+        /// Address to listen on for the phone.
+        #[arg(long, default_value = "0.0.0.0")]
+        bind: String,
+        /// Port for the direct receiver (default: the one in the pairing code).
+        #[arg(long)]
+        port: Option<u16>,
+        /// Seconds between cloud checks and address announcements.
+        #[arg(long, default_value_t = 60)]
+        interval: u64,
+    },
     /// Show what is waiting in the inbox and whether the phone is still backing up.
     Status,
     /// Print the key for pairing the phone.
@@ -62,6 +76,9 @@ struct Config {
     inbox: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     worker: Option<WorkerCfg>,
+    /// Port for the direct (LAN) receiver; also what the pairing QR advertises.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    lan_port: Option<u16>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -96,6 +113,72 @@ fn load(path: &PathBuf) -> Result<(Config, LibraryKey)> {
     Ok((cfg, key))
 }
 
+fn state_dir(config: &PathBuf) -> Result<PathBuf> {
+    Ok(config.parent().context("config has no parent dir")?.join("state"))
+}
+
+/// Private IPv4 addresses of this machine: what the phone should try on the home network.
+fn local_addrs() -> Vec<String> {
+    if_addrs::get_if_addrs()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|i| !i.is_loopback())
+        .filter_map(|i| match i.ip() {
+            std::net::IpAddr::V4(v4) if v4.is_private() => Some(v4.to_string()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Encrypted with the library key, so the cloud only ever sees an opaque blob.
+fn lan_hint(key: &LibraryKey, port: u16) -> Result<String> {
+    use cloudwind_core::base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    let now = std::time::SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+    let json = serde_json::json!({ "addrs": local_addrs(), "port": port, "at": now }).to_string();
+    let mut ct = Vec::new();
+    encrypt(key, "lan", None, || Ok(json.as_bytes()), &mut ct)?;
+    Ok(URL_SAFE_NO_PAD.encode(ct))
+}
+
+fn daemon(cfg: Config, key: LibraryKey, state_dir: PathBuf, bind: &str, port: Option<u16>, interval: u64) -> Result<()> {
+    use std::io::Write;
+    let state = Arc::new(state::State::load(&state_dir)?);
+    let identity = lan::load_or_create_identity(&state_dir)?;
+    let remote: Option<Arc<RemoteInbox>> = cfg.worker.as_ref().map(|w| Arc::new(RemoteInbox::new(&w.url, &w.agent_token)));
+    let link: Option<Arc<dyn lan::CloudLink>> = remote.clone().map(|r| r as Arc<dyn lan::CloudLink>);
+
+    let port = port.or(cfg.lan_port).unwrap_or(lan::DEFAULT_PORT);
+    let (server, addr) = lan::start(&identity, bind, port)?;
+    println!("listening on {addr} (certificate {})", identity.fingerprint);
+    std::io::stdout().flush()?;
+
+    let receiver = Arc::new(lan::Lan::new(cfg.library.clone(), state.clone(), &key, link));
+    std::thread::spawn(move || lan::serve(receiver, server));
+
+    let inbox = open_inbox(&cfg)?;
+    loop {
+        // Cloud route: pull whatever the phone uploaded while it was away.
+        match sync::run(inbox.as_ref(), &key, &cfg.library, &state) {
+            Ok(r) => {
+                for p in &r.synced {
+                    println!("synced {}", p.display());
+                }
+                for (id, e) in &r.failed {
+                    eprintln!("FAILED {id}: {e}");
+                }
+            }
+            Err(e) => eprintln!("cloud check failed: {e:#}"),
+        }
+        // Let the phone find us. Best effort: the LAN route also works from the last-known address.
+        if let Some(r) = &remote {
+            if let Err(e) = lan_hint(&key, addr.port()).and_then(|h| r.put_lan_hint(&h)) {
+                eprintln!("could not announce address: {e:#}");
+            }
+        }
+        std::thread::sleep(Duration::from_secs(interval));
+    }
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let path = config_path(&cli)?;
@@ -116,7 +199,7 @@ fn main() -> Result<()> {
             if worker.is_none() && inbox.is_none() {
                 bail!("give --worker-url (with an agent token) or --inbox");
             }
-            let cfg = Config { key: key.to_base64(), library: library.clone(), inbox: inbox.clone(), worker };
+            let cfg = Config { key: key.to_base64(), library: library.clone(), inbox: inbox.clone(), worker, lan_port: None };
             fs::create_dir_all(path.parent().unwrap())?;
             write_private(&path, &serde_json::to_vec_pretty(&cfg)?)?;
             println!("Created {path:?}\nLibrary key (keep a copy somewhere safe): {}", cfg.key);
@@ -124,9 +207,12 @@ fn main() -> Result<()> {
         Cmd::Pair => {
             let (cfg, _) = load(&path)?;
             // This payload is what the QR code will carry: key + Worker URL + phone token.
+            let identity = lan::load_or_create_identity(&state_dir(&path)?)?;
             let payload = serde_json::json!({
                 "v": 1,
                 "key": cfg.key,
+                "fp": identity.fingerprint,
+                "port": cfg.lan_port.unwrap_or(lan::DEFAULT_PORT),
                 "url": cfg.worker.as_ref().map(|w| &w.url),
                 "token": cfg.worker.as_ref().and_then(|w| w.phone_token.as_ref()),
             });
@@ -143,8 +229,8 @@ fn main() -> Result<()> {
         }
         Cmd::Sync => {
             let (cfg, key) = load(&path)?;
-            let mut st = state::State::load(&path.parent().context("config has no parent dir")?.join("state"))?;
-            let r = sync::run(open_inbox(&cfg)?.as_ref(), &key, &cfg.library, &mut st)?;
+            let st = state::State::load(&state_dir(&path)?)?;
+            let r = sync::run(open_inbox(&cfg)?.as_ref(), &key, &cfg.library, &st)?;
             for p in &r.synced {
                 println!("synced {}", p.display());
             }
@@ -166,6 +252,10 @@ fn main() -> Result<()> {
             if !r.failed.is_empty() {
                 std::process::exit(1);
             }
+        }
+        Cmd::Run { bind, port, interval } => {
+            let (cfg, key) = load(&path)?;
+            daemon(cfg, key, state_dir(&path)?, bind, *port, *interval)?;
         }
         Cmd::Status => {
             let (cfg, _) = load(&path)?;
