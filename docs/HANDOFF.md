@@ -1,0 +1,220 @@
+# Cloudwind: handoff notes
+
+Written at the end of the first (cloud-sandbox) build session, for whoever continues: a new Claude session on
+Punit's own computer, or a human. It holds what isn't obvious from the code or the other docs: why things are
+the way they are, what's deployed, what's verified and what isn't, and how Punit likes to work.
+
+Read alongside: `README.md` (status and limits), `docs/PLAN.md` (original product plan), `docs/DIRECT_SYNC.md`
+(LAN design and rules), `docs/TESTING.md` (first home test).
+
+---
+
+## 1. Where things stand (end of session 1)
+
+- All work is on branch **`ccr-0a5102d9-uts9y1`** (not merged, no PR). Clone that branch.
+- **Built and tested in the sandbox**, all suites passing:
+  - **Rust:** `cloudwind-core` (crypto, file format) and `cloudwind-agent` (PC agent: cloud pull, LAN receiver, daemon).
+  - **Worker:** the Cloudflare Worker with R2 and D1. **Deployed and live.**
+  - **Android:** `android/core` (pure Kotlin, JVM-testable) and `android/app` (Compose + WorkManager).
+- **Never run for real yet:** the Android app on a phone, and the Windows `.exe` on Windows. Punit was about to do
+  the first home test (`docs/TESTING.md`) when this session ended. **Next step: run that test, then fix what breaks.**
+- **Punit already has the test kit** from chat: `Cloudwind.apk` (debug), `cloudwind.exe` (cross-compiled for Windows
+  with mingw), `setup.ps1` (contains the real tokens), `TESTING.md`.
+
+## 2. Deployed infrastructure (Cloudflare, Punit's account)
+
+| Thing | Value |
+| --- | --- |
+| Worker | `cloudwind`, at `https://cloudwind.outlanderwatr.workers.dev` |
+| R2 bucket | `cloudwind-inbox` |
+| D1 database | `cloudwind-status`, id in `worker/wrangler.toml` |
+| Cron | daily `17 3 * * *`: purge synced copies after the grace period, abort stale multipart uploads |
+| Secrets | `PHONE_TOKEN`, `AGENT_TOKEN` (64 hex each). **Rotated to real values at the end of the session.** The only copy outside Cloudflare is in Punit's `setup.ps1`. They are not in the repo or the chat. To rotate: `printf %s <new> \| npx wrangler secret put PHONE_TOKEN`, and the same for `AGENT_TOKEN`. |
+| D1 migrations applied | `schema.sql`, `0002_limits`, `0003_meta`, `0004_lan_hint` (all applied remotely) |
+
+- **Deploying** needs `CLOUDFLARE_API_TOKEN`. The custom token Punit made for the sandbox has: Workers R2 Storage
+  Edit, Workers Scripts Edit, D1 Edit, Account Settings Read. It had a short expiry, and Punit may have deleted it.
+  Locally, `npx wrangler login` is easier.
+- **Worker vars** (in `wrangler.toml`):
+  - `INBOX_CAP_BYTES` = 8 GiB
+  - `SOFT_FRACTION` = 0.6
+  - `MAX_OBJECT_BYTES` = 5 GiB
+  - `MAX_DOWNLOADS` = 5
+  - `GRACE_DAYS` = 7
+  - rate limit of 600 requests/min per role (`[[ratelimits]]`)
+
+## 3. Decisions and why (the ones not to undo by accident)
+
+### Product
+- **Name: Cloudwind** (the plan's working name was "Layover").
+- **Android first, native Kotlin.** iOS is out of scope for v1: background limits make it a different product.
+- **The cloud is a temporary inbox, not an archive.** It drains after the PC verifies. Synced copies are an evictable
+  cache. *Unsynced objects are never evicted.*
+- **"Safe to delete" only after the PC verified the SHA-256.**
+  - Deletion goes to the phone's **trash** (`createTrashRequest`), not permanent delete.
+  - A photo whose size changed after backup is never offered for deletion. It is re-queued instead.
+- **Default backup scope: photos taken after pairing.** "Also back up older photos" opts into the rest.
+  Camera (`DCIM/`) only unless "Include all folders" is on.
+
+### Cloud path
+- **Uploads go through the Worker** in fixed 8 MiB multipart parts, with no presigned R2 links. This avoids R2 S3 keys
+  entirely: one token pair, simpler setup. R2 requires equal-size parts except the last, so the part size must never
+  vary, and resume depends on it.
+- **Two bearer roles: phone and agent.** Neither can delete or overwrite. The phone token travels in the pairing QR.
+- **Limits** (all Punit-approved): 8 GiB cap (stays under the R2 free 10 GB-month, so $0 even if full all month).
+  Above 60% of the cap, synced copies are evicted oldest-first. Multipart uploads must declare their size, which is
+  reserved against the cap.
+- **R2 facts:** the 10 GB is a monthly *average*, and overage costs about $0.015/GB-month, not an outage. Egress is
+  free. The hard wall is the Workers free plan's 100k requests/day.
+
+### Crypto and format
+- **Format:** XChaCha20-Poly1305 STREAM (BE32), 1 MiB chunks; header `"CWND" | ver | chunk u32 | nonce19`.
+  Metadata (name, size, sha256, mtime) is encrypted inside, so the cloud never sees names.
+- **Kotlin uses an in-house ChaCha20-Poly1305** (`ChaChaPoly.kt`) because Android JCE provider names vary by
+  device. It is checked against the JDK across 300+ lengths and interoperates with Rust both ways (fixtures in both
+  test suites). It is still custom crypto: **flagged to Punit as worth an independent review.**
+- **The library key** is generated by the PC.
+  - On the phone it is stored wrapped by an Android Keystore AES-GCM key.
+  - On the PC it sits in plain `config.json` (0600 on Unix). OS keychain storage is not done yet.
+  - Key loss only loses photos still in the cloud, since the PC library is plaintext. So the "printable recovery
+    code" was deprioritised.
+
+### Direct (LAN) path: see `docs/DIRECT_SYNC.md`
+- **One route per file at a time.** Parallelism comes from different files taking different routes.
+  **The PC arbitrates** via `plan`: it replies with `have`, `cloud` and `want` (with a resume offset).
+- **Pinned self-signed TLS.** The cert fingerprint and port are in the pairing QR. Auth is
+  `HMAC-SHA256(key, "cloudwind/lan-auth/v1")`, so there's no extra secret to pair. Test vector for the key with bytes
+  0..31: `a705ba1e…cbcc`, asserted in both languages.
+- **Discovery:** the PC publishes an *encrypted* address hint to the Worker every minute (`PUT /v1/lan`). The phone
+  tries its last-known host first. **mDNS is not built.**
+- **Gates, with Punit's values.** They apply to **big files only**; small ones always go, within cloud limits.
+  - "Big" threshold: default 50 MB, user-selectable.
+  - Wi-Fi only for big cloud uploads: default on. Punit noted Indian unlimited-data users will turn it off. A metered
+    hotspot counts as "not Wi-Fi".
+  - Battery: "charging OR battery ≥ X%", with X from 30 to 90, default 40, and it can be turned off.
+  - Direct sends skip the Wi-Fi gate but obey the battery gate.
+- **Switching a cloud upload in progress:** if 64 MB or less remains, finish it on the cloud. Otherwise abort it
+  (`DELETE …/multipart/:uploadId` releases the reserved space) and go direct.
+- **Folder policy:** `DCIM/…` is cloud-OK. Every other folder defaults to **Home-only**, which never touches the
+  cloud. Each folder can be flipped. Rule in `folderPolicy()`, unit-tested.
+- **Not built, by decision:**
+  - **Tunneling / remote direct.** Rejected: CGNAT needs a relay anyway, and it would expose the PC to the internet.
+    Planned instead: an optional extra address so Tailscale/WireGuard users get it free.
+  - **Documents/PDFs.** Later. They need the Storage Access Framework, not MediaStore.
+
+### Android background reliability (the biggest product risk)
+- **WorkManager jobs:** periodic every 15 min, a new-photo content-URI trigger, "back up now" (expedited), and a
+  continuation job when a pass runs out of time.
+  - Jobs carry **no network or charging constraints**: gates are applied per file in `SyncRunner`, and direct sync
+    must work with no internet.
+- **One pass at a time.** A process-wide `AtomicBoolean`; a job that loses the race sets `rerunRequested`.
+  - The trigger job re-arms itself with `APPEND_OR_REPLACE`. Everyone else uses `KEEP`. Using APPEND from outside the
+    trigger job grew an unbounded chain: a real bug that was fixed.
+- **Time budget:** plain jobs get about 10 min, so a pass stops at 8 min and queues a continuation.
+  - Foreground (dataSync) time is rationed by a local ledger (`FgLedger`), because Android 15 allows 6 h per 24 h.
+  - Foreground is used only when something is sendable.
+  - WorkManager **2.10.0** is required: verified via `javap` that its `SystemForegroundService` implements `onTimeout`.
+- **Resumable cloud uploads:** the encrypted copy is staged in `filesDir/staging/<objectId>.enc`, and multipart
+  progress (`ResumeState`) is saved after every part.
+- **Incremental scan** uses MediaStore `GENERATION_MODIFIED` per volume, not an ID cursor. An ID cursor would
+  permanently miss a video that was still recording (pending) when its ID was assigned.
+- **Android 14 partial photo access** is detected (`MediaAccess.PARTIAL`) and shown, so the app doesn't look
+  healthy while skipping most of the library.
+- **Stalled-backup warning:** the phone warns if work is pending and nothing has succeeded for 24 h. The PC watchdog
+  (`cloudwind status`, and a warning on `sync`) flags the phone silent for 48 h. That covers the case the phone
+  can't report itself: the OS killed it.
+
+### PC agent
+- **One Rust binary, no Docker.** Commands:
+  - `init`, `pair [--light] [--svg FILE]`, `run` (the daemon: LAN server + cloud pull + hint heartbeat), `sync`
+    (one-shot), `status`, `upload` (phone simulator for tests).
+- **Shared state** (`state.rs`, takes `&self`):
+  - `seen.txt` holds the SHA-256 dedup set. `claim()` is atomic, so one file arriving by both routes is stored once.
+  - Per-object failure backoff runs from 1 min, doubling, up to 6 h.
+- **`place()`** is serialized by a global mutex (same-name arrivals once could overwrite) and copies cross-drive via
+  a hidden temp name.
+- **LAN transfers:** a stalled one is taken over after 15 s using generation tokens, and the stalled thread can never
+  write again. Before this fix, a dropped Wi-Fi made a file "busy" forever.
+- **ureq timeouts:** connect 15 s, read/write 60 s per call. Without them, PC sleep/wake could hang the daemon.
+- **QR:** dark modules on a light background by default (for dark terminals). Verified by decoding the rendered
+  output with OpenCV. The old rendering did not decode.
+
+## 4. Verified vs not verified
+
+- **Verified (sandbox):**
+  - Rust⇄Kotlin crypto both ways.
+  - Kotlin client → live Worker → Rust agent, byte-identical, including a 70–80 MB multipart and a
+    pause-then-resume.
+  - Real Rust agent driven from Kotlin over pinned TLS: wrong cert or wrong token refused, plan, resume, offset
+    conflict, dedup, bad-hash rejection.
+  - Direct arrival marks the cloud copy synced (live).
+  - Worker limits suite (cap, eviction, reservations, cancel, download cap, ranges, rate limit, hint).
+  - Paparazzi screenshots of every UI state.
+- **Not verified:**
+  - Anything Android does at runtime: Keystore, WorkManager scheduling, OEM battery killers, the ML Kit QR scanner,
+    the trash prompt, real Wi-Fi/LAN.
+  - The Windows exe at runtime: Wine was broken in the sandbox, even for a C hello-world.
+  - Windows Firewall behaviour.
+  - Immich picking files up from the library folder.
+
+## 5. How to work on it locally
+
+- **Rust:** `cargo test` (workspace). `cargo build --release -p cloudwind-agent`.
+- **Worker:**
+  - `cd worker && npm install`. `npx tsc --noEmit`.
+  - Local: `npx wrangler dev --local` with a `.dev.vars` (tokens + tiny limits). Then `./limits-test.sh` (see its
+    header) and `./smoke.sh`.
+  - Live: `BASE=… PHONE=… AGENT=… ./smoke.sh`.
+- **Android:**
+  - Needs the Android SDK (`ANDROID_HOME` or `local.properties`). Otherwise only `:core` is included (see
+    `settings.gradle.kts`).
+  - `./gradlew :core:test`. Interop fixtures: `-DfixtureDir=../crates/cloudwind-core/tests/fixtures`.
+  - Real-agent LAN test: set `CLOUDWIND_BIN=<path to cloudwind binary>`.
+  - Live tests: `CLOUDWIND_E2E_URL`, `CLOUDWIND_E2E_PHONE_TOKEN`, `CLOUDWIND_E2E_AGENT_TOKEN`, `CLOUDWIND_E2E_DIR`
+    (a dir with `IMG_*`/`VID_*` files, plus `VID_resume.mp4` for the resume test). Without these, live tests skip
+    silently, but **with URL+token set and no DIR they fail**. That's a known test quirk, not a bug.
+  - `./gradlew :app:assembleDebug :app:testDebugUnitTest :app:recordPaparazziDebug` (screenshots in
+    `app/src/test/snapshots/images`, copies in `docs/screenshots/`).
+  - With a phone attached, `adb install -r app/build/outputs/apk/debug/app-debug.apk` and `adb logcat` are the
+    biggest wins over the sandbox.
+- **Windows exe from Linux:** `rustup target add x86_64-pc-windows-gnu`, install `mingw-w64`, then
+  `CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc cargo build --release --target x86_64-pc-windows-gnu -p cloudwind-agent`.
+  On Windows itself just `cargo build --release`.
+- **PC paths:** config is `%USERPROFILE%\.config\cloudwind\config.json` (or `~/.config/cloudwind`). State is in
+  `state\` next to it: `seen.txt`, `failures.json`, `tmp\`, `lan\` partials, and the LAN cert/key. The default
+  library in `setup.ps1` is `Pictures\Cloudwind`. The LAN port is **47615**.
+- **Leftover test objects in the shared inbox:** objects from live tests are encrypted with throwaway keys, so a real
+  PC can't decrypt them and logs `FAILED … not a Cloudwind file` with backoff. Clear them by marking them synced with
+  the agent token (`POST /v1/objects/<id>/synced`). The smoke test now tidies its own.
+
+## 6. Open items, roughly in priority order
+
+1. **First real home test** (`docs/TESTING.md`) and fixing what it finds. Expect Android-runtime surprises.
+2. **Immich integration:** Immich says file watching often doesn't work on network drives or in Docker. Plan: after
+   `place()`, call Immich's library scan API when configured (a preset), with periodic scan as fallback. Needs
+   Punit's Windows + Immich setup to test.
+3. **Tray icon + start at login + OS keychain** for the PC agent. This needs a GUI layer; Tauri was the leading idea.
+   It also unblocks quick-share's popup.
+4. **mDNS discovery** (works with no internet). **Optional extra address** for Tailscale/WireGuard users.
+5. **Edited photos:** handled for deletion safety, but a photo edited *after* sync is only re-queued when the user
+   taps "Free up space". The scan could detect it proactively via `GENERATION_MODIFIED` + size.
+6. **UI polish:** Punit said the UI "definitely needs work" but wants the product solid first.
+7. **LAST, by Punit's explicit instruction: "Send to PC" quick share.**
+   - Phone: an Android share-sheet target accepting any file type.
+   - PC: a small Dynamic-Island-style floating pill with Open / Show in folder.
+   - Files land in a separate `Cloudwind Received` folder, with cloud fallback when away.
+   - Don't try to out-feature LocalSend, Quick Share or KDE Connect. The edge is "already paired, no accept prompt,
+     works away from home".
+8. **Independent review of `ChaChaPoly.kt`** (custom crypto).
+
+## 7. How Punit likes to work
+
+- **Thinks out loud in long voice-style messages.** Pull out the decisions and confirm them briefly. He says "you
+  tell me" a lot: he wants a clear recommendation with reasons and pushback where warranted, not a menu.
+- **Likes research grounded in how other apps behaved.** Earlier rounds covered Immich, Nextcloud, Syncthing,
+  PhotoSync, Ente, Google Photos and iCloud. Cite sources when researching.
+- **Wants a working foundation before features**, and features before UI polish. Quick share is explicitly last.
+- **Cares about edge cases and cost:** limits, failure modes, duplicates, resume, battery and data use.
+- **Is based in India:** unlimited mobile data is common, so make data gates optional.
+- **Is fine with Claude provisioning on Cloudflare.** He made the API token, and asked to "use its CLI".
+- **Wants to be told plainly** what's verified vs not, and what was changed on his account.
