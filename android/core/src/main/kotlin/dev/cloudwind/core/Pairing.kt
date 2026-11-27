@@ -5,14 +5,25 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
 /** What the PC shows as a QR code: `cloudwind://pair/<base64url(json)>`. */
-data class Pairing(val key: ByteArray, val url: String, val token: String) {
+data class Pairing(
+    val key: ByteArray,
+    val url: String,
+    val token: String,
+    /** SHA-256 of the PC's LAN certificate and its port; null if the PC didn't advertise direct sync. */
+    val lanFingerprint: String? = null,
+    val lanPort: Int? = null,
+) {
     override fun equals(other: Any?) =
-        other is Pairing && key.contentEquals(other.key) && url == other.url && token == other.token
+        other is Pairing && key.contentEquals(other.key) && url == other.url && token == other.token &&
+            lanFingerprint == other.lanFingerprint && lanPort == other.lanPort
     override fun hashCode() = key.contentHashCode() xor url.hashCode() xor token.hashCode()
     override fun toString() = "Pairing(url=$url)" // never print the key or token
 
     @Serializable
-    private data class Payload(val v: Int = 1, val key: String, val url: String? = null, val token: String? = null)
+    private data class Payload(
+        val v: Int = 1, val key: String, val url: String? = null, val token: String? = null,
+        val fp: String? = null, val port: Int? = null,
+    )
 
     companion object {
         private const val PREFIX = "cloudwind://pair/"
@@ -27,7 +38,11 @@ data class Pairing(val key: ByteArray, val url: String, val token: String) {
                 val url = p.url?.trim()?.trimEnd('/')
                 if (p.v != 1 || key.size != 32 || url.isNullOrEmpty() || p.token.isNullOrEmpty() ||
                     !(url.startsWith("https://") || url.startsWith("http://"))
-                ) null else Pairing(key, url, p.token)
+                ) null else Pairing(
+                    key, url, p.token,
+                    lanFingerprint = p.fp?.lowercase()?.takeIf { it.matches(Regex("^[0-9a-f]{64}$")) },
+                    lanPort = p.port?.takeIf { it in 1..65535 },
+                )
             }
         } catch (e: Exception) {
             null

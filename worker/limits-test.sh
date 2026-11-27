@@ -68,6 +68,24 @@ has $T/h '"phone_last_seen":[0-9]' "phone_last_seen recorded from phone requests
 has $T/h '"pending_count"' "health reports pending count"
 ok "$(curl -s -o /dev/null -w '%{http_code}' "${P[@]}" $BASE/v1/health)" 403 "phone cannot read health"
 
+# cancelling a half-finished upload releases its reserved space
+ID3=$(rid)
+curl -s -o $T/out -X POST "${P[@]}" -H 'content-type: application/json' -d '{"size":900000}' $BASE/v1/objects/$ID3/multipart
+UP3=$(sed -E 's/.*"uploadId":"([^"]+)".*/\1/' $T/out)
+BEFORE=$(curl -s "${P[@]}" $BASE/v1/status | grep -o '"inbox_bytes":[0-9]*' | cut -d: -f2)
+ok "$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "${P[@]}" $BASE/v1/objects/$ID3/multipart/$UP3)" 200 "phone cancels a multipart upload"
+AFTER=$(curl -s "${P[@]}" $BASE/v1/status | grep -o '"inbox_bytes":[0-9]*' | cut -d: -f2)
+[ "$((BEFORE-AFTER))" = 900000 ] && echo "ok   cancel released the 900000 reserved bytes" || { echo "FAIL reservation not released ($BEFORE -> $AFTER)"; fail=1; }
+ok "$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "${P[@]}" $BASE/v1/objects/$ID3/multipart/$UP3)" 200 "cancelling twice is harmless"
+ok "$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "${A[@]}" $BASE/v1/objects/$ID3/multipart/$UP3)" 403 "agent cannot cancel uploads"
+
+# LAN hint: PC publishes, phone reads
+ok "$(curl -s -o /dev/null -w '%{http_code}' "${P[@]}" $BASE/v1/lan)" 404 "no hint before the PC announces"
+ok "$(curl -s -o /dev/null -w '%{http_code}' -X PUT "${A[@]}" -H 'content-type: application/json' -d '{"payload":"opaque-blob"}' $BASE/v1/lan)" 200 "PC publishes hint"
+curl -s "${P[@]}" $BASE/v1/lan > $T/lan; has $T/lan '"payload":"opaque-blob"' "phone reads the hint"
+ok "$(curl -s -o /dev/null -w '%{http_code}' -X PUT "${P[@]}" -H 'content-type: application/json' -d '{"payload":"x"}' $BASE/v1/lan)" 403 "phone cannot publish a hint"
+ok "$(curl -s -o /dev/null -w '%{http_code}' -X PUT "${A[@]}" -H 'content-type: application/json' -d '{"payload":""}' $BASE/v1/lan)" 400 "empty hint rejected"
+
 # rate limit (keep last: it throttles this role for a minute)
 n429=0; for i in $(seq 1 700); do c=$(curl -s -o /dev/null -w '%{http_code}' "${A[@]}" $BASE/v1/pending); [ "$c" = 429 ] && n429=$((n429+1)); done
 [ $n429 -gt 0 ] && echo "ok   rate limit kicked in ($n429 of 700 refused)" || { echo "FAIL no 429 after 700 requests"; fail=1; }

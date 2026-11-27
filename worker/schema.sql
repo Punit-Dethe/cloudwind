@@ -21,3 +21,10 @@ CREATE TABLE IF NOT EXISTS meta (
   k TEXT PRIMARY KEY,
   v INTEGER NOT NULL
 );
+
+-- Opaque (encrypted by the PC) hint telling the phone where to find the PC on the home network.
+CREATE TABLE IF NOT EXISTS lan_hint (
+  id         INTEGER PRIMARY KEY CHECK (id = 1),
+  payload    TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);

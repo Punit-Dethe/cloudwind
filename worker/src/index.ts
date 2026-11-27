@@ -235,6 +235,32 @@ export default {
       return json({ id, size: obj.size }, 201);
     }
 
+    // Cancel a half-finished upload (e.g. the PC appeared and the file is going direct instead).
+    if ((m = /^\/v1\/objects\/([^/]+)\/multipart\/([^/]+)$/.exec(path)) && req.method === "DELETE") {
+      const bad = need("phone"); if (bad) return bad;
+      const [, id, uploadId] = m;
+      if (!ID.test(id)) return err(400, "bad id");
+      try { await env.INBOX.resumeMultipartUpload(key(id), uploadId).abort(); } catch { /* already gone */ }
+      await env.DB.prepare("DELETE FROM uploads WHERE upload_id = ? AND id = ?").bind(uploadId, id).run(); // releases the reserved space
+      return json({ id, aborted: true });
+    }
+
+    // ---- finding the PC on the home network ---------------------------------
+    if (path === "/v1/lan" && req.method === "PUT") {
+      const bad = need("agent"); if (bad) return bad;
+      const body = (await req.json().catch(() => null)) as { payload?: string } | null;
+      if (typeof body?.payload !== "string" || body.payload.length === 0 || body.payload.length > 2048) return err(400, "bad_payload");
+      await env.DB.prepare(
+        "INSERT INTO lan_hint (id, payload, updated_at) VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at",
+      ).bind(body.payload, now()).run();
+      return json({ ok: true });
+    }
+    if (path === "/v1/lan" && req.method === "GET") {
+      const bad = need("phone"); if (bad) return bad;
+      const row = await env.DB.prepare("SELECT payload, updated_at FROM lan_hint WHERE id = 1").first();
+      return row ? json(row) : err(404, "no_hint");
+    }
+
     // ---- phone: status -------------------------------------------------
     if (path === "/v1/status" && req.method === "GET") {
       const bad = need("phone"); if (bad) return bad;

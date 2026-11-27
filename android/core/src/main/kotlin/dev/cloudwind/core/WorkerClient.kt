@@ -215,6 +215,19 @@ class WorkerClient(baseUrl: String, private val token: String) {
         onState(null)
     }
 
+    /** Cancel a multipart upload (e.g. the file is going direct to the PC instead). Frees its reserved space. */
+    fun abortUpload(id: String, uploadId: String) {
+        body(open("DELETE", "/v1/objects/$id/multipart/$uploadId"), setOf(200))
+    }
+
+    /** The PC's encrypted address announcement, or null if it hasn't published one. */
+    fun lanHint(): String? = try {
+        val text = body(open("GET", "/v1/lan"), setOf(200))
+        ((json.parseToJsonElement(text) as JsonObject)["payload"] as? JsonPrimitive)?.content
+    } catch (e: HttpError) {
+        if (e.code == 404) null else throw e
+    }
+
     /** Current inbox limits and free space, without listing objects. */
     fun limits(): Limits = status(since = Long.MAX_VALUE / 2).limits
 
