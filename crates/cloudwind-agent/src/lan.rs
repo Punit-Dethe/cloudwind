@@ -303,6 +303,10 @@ impl Lan {
             return Ok(Received::BadHash);
         }
         let stored = sync::place(&self.library, &self.state, &part, name, modified, sha256)?;
+        match &stored {
+            Some(p) => println!("received {} (direct)", p.display()),
+            None => println!("received {name} (direct, already had it)"),
+        }
         self.cloud_done(object);
         Ok(Received::Stored { path: stored })
     }
