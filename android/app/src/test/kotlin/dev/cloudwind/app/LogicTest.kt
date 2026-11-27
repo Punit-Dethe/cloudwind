@@ -82,4 +82,11 @@ class LogicTest {
         assertEquals(l.usedMs(10_000), back.usedMs(10_000))
         assertEquals(0L, FgLedger.decode("garbage;1:x;:").usedMs(10_000))
     }
+
+    // ---- "why is this held back" summary ----
+    @Test fun waiting_summary_names_each_reason_once_with_counts() {
+        assertEquals(null, SyncRunner.summarizeWaits(emptyMap()))
+        val text = SyncRunner.summarizeWaits(mapOf(dev.cloudwind.core.Wait.WIFI to 4, dev.cloudwind.core.Wait.HOME_NETWORK to 3))!!
+        assertEquals("4 waiting for Wi-Fi · 3 waiting for your home network", text)
+    }
 }

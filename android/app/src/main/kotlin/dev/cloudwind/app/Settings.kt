@@ -1,5 +1,9 @@
 package dev.cloudwind.app
 
+import dev.cloudwind.core.Gates
+import dev.cloudwind.core.Policy
+import dev.cloudwind.core.folderPolicy
+
 import android.content.Context
 
 /** Non-secret preferences. Defaults are conservative: Wi-Fi only, new photos only. */
@@ -10,9 +14,59 @@ class Settings(context: Context) {
         get() = sp.getBoolean("wifi_only", true)
         set(v) = sp.edit().putBoolean("wifi_only", v).apply()
 
-    var chargingOnly: Boolean
-        get() = sp.getBoolean("charging_only", false)
-        set(v) = sp.edit().putBoolean("charging_only", v).apply()
+    /** Big-file gate: hold big files until charging or at least [batteryMin]% battery. */
+    var batteryGate: Boolean
+        get() = sp.getBoolean("battery_gate", true)
+        set(v) = sp.edit().putBoolean("battery_gate", v).apply()
+
+    var batteryMin: Int
+        get() = sp.getInt("battery_min", 40).coerceIn(Gates.MIN_BATTERY, Gates.MAX_BATTERY)
+        set(v) = sp.edit().putInt("battery_min", v.coerceIn(Gates.MIN_BATTERY, Gates.MAX_BATTERY)).apply()
+
+    /** Files at least this big (MB) count as "big" and are subject to the gates; smaller ones always go. */
+    var bigMb: Int
+        get() = sp.getInt("big_mb", 50)
+        set(v) = sp.edit().putInt("big_mb", v.coerceAtLeast(1)).apply()
+
+    /** `wifiOnly` is now "Wi-Fi only for big files". */
+    val gates: Gates
+        get() = Gates(bigBytes = bigMb.toLong() shl 20, wifiOnlyForBig = wifiOnly, batteryGate = batteryGate, batteryMinPct = batteryMin).normalized()
+
+    // ---- folder policy: camera is cloud-OK, everything else is Home-only unless flipped ----
+    private fun folderSet(key: String): Set<String> = sp.getStringSet(key, emptySet()) ?: emptySet()
+    private fun norm(p: String) = p.trim().trimEnd('/')
+
+    fun policyFor(relPath: String): Policy = folderPolicy(relPath, folderSet("home_only_folders"), folderSet("cloud_folders"))
+
+    fun setFolderHomeOnly(relPath: String, homeOnly: Boolean) {
+        val p = norm(relPath)
+        val h = folderSet("home_only_folders").toMutableSet(); val c = folderSet("cloud_folders").toMutableSet()
+        if (homeOnly) { h += p; c -= p } else { c += p; h -= p }
+        sp.edit().putStringSet("home_only_folders", h).putStringSet("cloud_folders", c).apply()
+    }
+
+    /** Where the PC was last found on a home network, to try first next time. */
+    var lastLanHost: String?
+        get() = sp.getString("last_lan_host", null)
+        set(v) = sp.edit().putString("last_lan_host", v).apply()
+
+    /** The last pass found the PC on this network. */
+    var pcOnNetwork: Boolean
+        get() = sp.getBoolean("pc_on_network", false)
+        set(v) = sp.edit().putBoolean("pc_on_network", v).apply()
+
+    /** Files moved by each route in the last pass (for the status line). */
+    var lastDirect: Int
+        get() = sp.getInt("last_direct", 0)
+        set(v) = sp.edit().putInt("last_direct", v).apply()
+    var lastCloud: Int
+        get() = sp.getInt("last_cloud", 0)
+        set(v) = sp.edit().putInt("last_cloud", v).apply()
+
+    /** Human summary of what is held back and why, e.g. "2 waiting for Wi-Fi". Null when nothing is. */
+    var waiting: String?
+        get() = sp.getString("waiting", null)
+        set(v) = sp.edit().putString("waiting", v).apply()
 
     /** false = only DCIM (camera); true = every folder with photos/videos. */
     var allFolders: Boolean

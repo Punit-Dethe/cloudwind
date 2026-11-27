@@ -14,13 +14,25 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+data class FolderRow(val path: String, val count: Int, val homeOnly: Boolean)
+
 data class UiState(
     val paired: Boolean = false,
     val server: String = "",
     val counts: Counts = Counts(),
     val inboxBytes: Long = 0,
     val wifiOnly: Boolean = true,
-    val chargingOnly: Boolean = false,
+    val batteryGate: Boolean = true,
+    val batteryMin: Int = 40,
+    val bigMb: Int = 50,
+    /** The PC advertised direct sync at pairing, and whether the last pass found it on this network. */
+    val directAvailable: Boolean = false,
+    val pcOnNetwork: Boolean = false,
+    val lastDirect: Int = 0,
+    val lastCloud: Int = 0,
+    /** Why some files are held back, e.g. "3 waiting for Wi-Fi". */
+    val waiting: String? = null,
+    val folders: List<FolderRow> = emptyList(),
     val allFolders: Boolean = false,
     val busy: Boolean = false,
     val message: String? = null,
@@ -58,7 +70,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 it.copy(
                     paired = pairing != null, server = pairing?.url ?: "", counts = counts,
                     inboxBytes = SyncRunner.lastInboxBytes,
-                    wifiOnly = settings.wifiOnly, chargingOnly = settings.chargingOnly, allFolders = settings.allFolders,
+                    wifiOnly = settings.wifiOnly, batteryGate = settings.batteryGate, batteryMin = settings.batteryMin, bigMb = settings.bigMb,
+                    allFolders = settings.allFolders,
+                    directAvailable = pairing?.lanFingerprint != null, pcOnNetwork = settings.pcOnNetwork,
+                    lastDirect = settings.lastDirect, lastCloud = settings.lastCloud, waiting = settings.waiting,
+                    folders = db.folders().map { (path, n) -> FolderRow(path, n, settings.policyFor(path) == dev.cloudwind.core.Policy.HOME_ONLY) },
                     lastError = settings.lastError,
                     inboxFull = settings.inboxFull, notice = settings.notice, maxObjectBytes = settings.maxObjectBytes,
                     access = MediaAccess.current(getApplication()),
@@ -108,7 +124,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun setWifiOnly(v: Boolean) { settings.wifiOnly = v; Scheduler.schedule(getApplication()); refresh() }
-    fun setChargingOnly(v: Boolean) { settings.chargingOnly = v; Scheduler.schedule(getApplication()); refresh() }
+    fun setBatteryGate(v: Boolean) { settings.batteryGate = v; refresh() }
+    fun setBatteryMin(v: Int) { settings.batteryMin = v; refresh() }
+    fun setBigMb(v: Int) { settings.bigMb = v; refresh() }
+    fun setFolderHomeOnly(path: String, homeOnly: Boolean) { settings.setFolderHomeOnly(path, homeOnly); refresh() }
     fun setAllFolders(v: Boolean) { settings.allFolders = v; Scheduler.backUpNow(getApplication()); refresh() }
 
     fun backUpNow() { Scheduler.backUpNow(getApplication()); message("Backing up…") }

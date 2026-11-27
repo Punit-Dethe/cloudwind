@@ -24,10 +24,14 @@ object Scheduler {
     private const val NOW = "cloudwind-now"
     private const val CONTINUE = "cloudwind-continue"
 
-    private fun constraints(settings: Settings, trigger: Boolean = false, ignoreRules: Boolean = false) =
+    /**
+     * Jobs no longer carry Wi-Fi/charging rules: the runner applies them per file, so small photos still go
+     * and direct (LAN) transfers work even on a network with no internet. The only constraint left is the
+     * new-photo trigger.
+     */
+    private fun constraints(@Suppress("UNUSED_PARAMETER") settings: Settings, trigger: Boolean = false, @Suppress("UNUSED_PARAMETER") ignoreRules: Boolean = false) =
         Constraints.Builder().apply {
-            setRequiredNetworkType(if (settings.wifiOnly && !ignoreRules) NetworkType.UNMETERED else NetworkType.CONNECTED)
-            setRequiresCharging(settings.chargingOnly && !ignoreRules)
+            setRequiredNetworkType(NetworkType.NOT_REQUIRED)
             if (trigger) {
                 addContentUriTrigger(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, true)
                 addContentUriTrigger(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, true)

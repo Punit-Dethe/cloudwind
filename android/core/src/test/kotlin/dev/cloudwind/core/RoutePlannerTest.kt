@@ -102,4 +102,20 @@ class RoutePlannerTest {
         assertFalse(RoutePlanner.finishCloudInstead(65 * mb))
         assertFalse(RoutePlanner.finishCloudInstead(-1))
     }
+
+    // ---- folder policy ----
+    @Test fun camera_is_cloud_ok_and_other_folders_default_to_home_only() {
+        val none = emptySet<String>()
+        assertEquals(Policy.CLOUD_OK, folderPolicy("DCIM/Camera/", none, none))
+        assertEquals(Policy.CLOUD_OK, folderPolicy("DCIM", none, none))
+        assertEquals(Policy.HOME_ONLY, folderPolicy("Pictures/Screenshots/", none, none))
+        assertEquals(Policy.HOME_ONLY, folderPolicy("Download/", none, none))
+        assertEquals(Policy.HOME_ONLY, folderPolicy("DCIMfake/", none, none), "only the real DCIM tree counts")
+    }
+
+    @Test fun explicit_choices_beat_the_default_either_way() {
+        assertEquals(Policy.HOME_ONLY, folderPolicy("DCIM/Camera/", setOf("DCIM/Camera"), emptySet()))
+        assertEquals(Policy.CLOUD_OK, folderPolicy("Pictures/Screenshots/", emptySet(), setOf("Pictures/Screenshots")))
+        assertEquals(Policy.HOME_ONLY, folderPolicy("Documents/Scans", setOf("Documents/Scans"), setOf("Documents/Scans")), "home-only wins a tie")
+    }
 }

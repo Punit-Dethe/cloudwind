@@ -15,7 +15,9 @@ Full plan: [docs/PLAN.md](docs/PLAN.md)
 - [x] Verified end to end on Cloudflare: 300 KB photo and 70 MB video (multipart) round-trip byte-identical
 - [x] Android app (Kotlin + Compose): QR/paste pairing, Keystore-wrapped key, MediaStore scan, encrypt + upload, WorkManager (periodic + new-photo trigger + foreground for backlogs), status back from the PC, batch "Free up space" with one system prompt per 500 photos. Compiles to a debug APK; **not yet run on a real phone**
 - [x] `cloudwind pair` prints a QR code for the phone
-- [ ] Tray icon, start at login, OS keychain, QR pairing, Immich/PhotoPrism presets
+- [x] Direct (LAN) sync: PC receiver with pinned TLS, route planner + user gates, Home-only folders — see `docs/DIRECT_SYNC.md`
+- [ ] Tray icon, start at login, OS keychain, Immich/PhotoPrism presets, mDNS discovery
+- [ ] Last: "Send to PC" quick share (share sheet + floating notification on the PC)
 
 ## Architecture note: uploads go through the Worker in parts
 
@@ -114,3 +116,19 @@ Tests: `worker/limits-test.sh` (needs a local Worker with tiny caps, see its hea
 Phone screens are rendered from the real Compose code with sample data (`cd android && ./gradlew :app:recordPaparazziDebug`;
 `verifyPaparazziDebug` flags unintended UI changes). The PC image is the real CLI output with demo values.
 See `docs/screenshots/`.
+
+## Direct sync on the home network
+
+When the phone and PC share a network, files go straight across (any size, no cloud limits, nothing leaves the house);
+the cloud is the fallback. Full design and rules: [`docs/DIRECT_SYNC.md`](docs/DIRECT_SYNC.md).
+
+```sh
+cloudwind run      # leave running: receives from the phone, pulls from the cloud, announces the PC's address
+cloudwind pair     # the QR now also carries the PC's certificate fingerprint, so the phone pins it
+```
+
+- **PC arbitrates:** the phone sends a plan; the PC answers `have` (already stored), `cloud` (it will pull these itself) and `want` (send me these, resume at byte N). The same bytes can never be stored twice, whichever route delivers them.
+- **Direct arrival frees the cloud:** the PC marks the matching cloud object synced, so its quota is released.
+- **Security:** HTTPS with a self-signed certificate pinned from the pairing QR; auth is an HMAC derived from the library key, so there is nothing extra to pair. The PC address hint stored in the cloud is encrypted.
+- **Gates (big files only):** size threshold (default 50 MB), Wi-Fi only (default on), "charging or battery ≥ X%" (X is 30–90, default 40, can be turned off). Small photos always go. Direct sends never need the Wi-Fi gate but do obey the battery gate.
+- **Folders:** camera photos may use the cloud; other folders are Home-only by default and each can be flipped. Home-only files never touch the cloud.

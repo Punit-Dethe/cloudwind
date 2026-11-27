@@ -34,6 +34,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -143,7 +144,10 @@ data class HomeActions(
     val backUpNow: () -> Unit = {},
     val backUpOlder: () -> Unit = {},
     val wifiOnly: (Boolean) -> Unit = {},
-    val chargingOnly: (Boolean) -> Unit = {},
+    val batteryGate: (Boolean) -> Unit = {},
+    val batteryMin: (Int) -> Unit = {},
+    val bigMb: (Int) -> Unit = {},
+    val folderHomeOnly: (String, Boolean) -> Unit = { _, _ -> },
     val allFolders: (Boolean) -> Unit = {},
     val batterySettings: () -> Unit = {},
     val phoneSteps: () -> Unit = {},
@@ -174,7 +178,10 @@ fun Home(vm: MainViewModel, ui: UiState) {
             backUpNow = vm::backUpNow,
             backUpOlder = vm::backUpOlder,
             wifiOnly = vm::setWifiOnly,
-            chargingOnly = vm::setChargingOnly,
+            batteryGate = vm::setBatteryGate,
+            batteryMin = vm::setBatteryMin,
+            bigMb = vm::setBigMb,
+            folderHomeOnly = vm::setFolderHomeOnly,
             allFolders = vm::setAllFolders,
             batterySettings = { ctx.startActivity(Intent(AndroidSettings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) },
             phoneSteps = { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://dontkillmyapp.com"))) },
@@ -194,6 +201,13 @@ fun HomeScreen(ui: UiState, a: HomeActions) {
         Column {
             Text("Cloudwind", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
             if (ui.nowSecs > 0) Text(lastBackup, style = MaterialTheme.typography.bodySmall)
+            if (ui.directAvailable) {
+                Text(
+                    if (ui.pcOnNetwork) "● PC found on your home network: sending directly" else "○ PC not on this network: using the cloud",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (ui.pcOnNetwork) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
 
         when (ui.access) {
@@ -254,7 +268,11 @@ fun HomeScreen(ui: UiState, a: HomeActions) {
         }
 
         if (c.uploaded > 0) {
-            Text("Waiting for your PC to pick up ${c.uploaded} item(s). Turn it on and run Cloudwind.", style = MaterialTheme.typography.bodyMedium)
+            Text(
+                if (ui.pcOnNetwork) "Your PC is collecting ${c.uploaded} item(s) from the cloud."
+                else "Waiting for your PC to pick up ${c.uploaded} item(s). Turn it on and run Cloudwind.",
+                style = MaterialTheme.typography.bodyMedium,
+            )
         }
         if (ui.inboxFull) {
             Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)) {
@@ -268,6 +286,10 @@ fun HomeScreen(ui: UiState, a: HomeActions) {
             val max = if (ui.maxObjectBytes > 0) " (limit ${formatBytes(ui.maxObjectBytes)} per file)" else ""
             Text("${c.skipped} item(s) are too large for the inbox$max and were not uploaded. Copy them to your PC another way.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
         }
+        ui.waiting?.let { Text("Held back: $it", style = MaterialTheme.typography.bodySmall) }
+        if (ui.lastDirect + ui.lastCloud > 0) {
+            Text("Last pass: ${ui.lastDirect} sent directly · ${ui.lastCloud} via the cloud", style = MaterialTheme.typography.bodySmall)
+        }
         ui.notice?.takeIf { ui.access != MediaAccess.PARTIAL }?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
         ui.lastError?.let { Text("Last problem: $it", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
         ui.message?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
@@ -275,10 +297,41 @@ fun HomeScreen(ui: UiState, a: HomeActions) {
         Button(onClick = a.backUpNow, modifier = Modifier.fillMaxWidth()) { Text("Back up now") }
         OutlinedButton(onClick = a.backUpOlder, modifier = Modifier.fillMaxWidth()) { Text("Also back up older photos") }
 
-        Text("Upload rules", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-        Toggle("Wi-Fi only", ui.wifiOnly, a.wifiOnly)
-        Toggle("Only while charging", ui.chargingOnly, a.chargingOnly)
+        Text("Big files", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+        Text(
+            "Files over ${ui.bigMb} MB wait for these. Small photos always go, and sending to your PC on the home network is never held back by Wi-Fi.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf(25, 50, 100, 250, 500).forEach { mb ->
+                val chosen = ui.bigMb == mb
+                if (chosen) Button(onClick = { a.bigMb(mb) }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp)) { Text("$mb MB") }
+                else OutlinedButton(onClick = { a.bigMb(mb) }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp)) { Text("$mb") }
+            }
+        }
+        Toggle("Wi-Fi only (uploads to the cloud)", ui.wifiOnly, a.wifiOnly)
+        Toggle("Wait for charging or enough battery", ui.batteryGate, a.batteryGate)
+        if (ui.batteryGate) {
+            Text("Charging, or at least ${ui.batteryMin}% battery", style = MaterialTheme.typography.bodySmall)
+            Slider(
+                value = ui.batteryMin.toFloat(), onValueChange = { a.batteryMin(it.toInt()) },
+                valueRange = 30f..90f, steps = 11, modifier = Modifier.fillMaxWidth(),
+            )
+        }
+
+        Text("Folders", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
         Toggle("Include all folders (not just camera)", ui.allFolders, a.allFolders)
+        Text("Home only means these files go straight to your PC on the home network and never touch the cloud.", style = MaterialTheme.typography.bodySmall)
+        ui.folders.forEach { f ->
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                Column(Modifier.weight(1f)) {
+                    Text(f.path.ifBlank { "(no folder)" }, style = MaterialTheme.typography.bodyMedium)
+                    Text("${f.count} item(s)", style = MaterialTheme.typography.bodySmall)
+                }
+                Text("Home only", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(end = 8.dp))
+                Switch(f.homeOnly, { a.folderHomeOnly(f.path, it) })
+            }
+        }
 
         Text("Background reliability", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
         if (ui.batteryUnrestricted) {

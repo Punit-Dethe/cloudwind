@@ -53,6 +53,9 @@ battery minimum 30–90 % (default 40). The battery gate also applies to big dir
 Camera (`DCIM/…`) is cloud-OK by default. With "all folders" on, other folders default to **Home only**; each folder
 can be flipped either way.
 
+## Status
+Steps 1–3 below are built and tested (Kotlin ⇄ real Rust agent over pinned TLS, plus live checks against the Worker). Not yet verified on a real phone / real home network.
+
 ## Build order
 1. PC: LAN server + ledger + `cloudwind run` daemon (cloud pull + hint heartbeat).   *(tested against the real agent from Kotlin)*
 2. Phone core: pinned LAN client, route planner + gates, cloud-upload abort.

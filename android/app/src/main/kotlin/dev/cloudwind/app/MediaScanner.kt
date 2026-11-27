@@ -26,7 +26,7 @@ object MediaScanner {
             }
             resolver.query(
                 uri,
-                arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DISPLAY_NAME, MediaStore.MediaColumns.SIZE),
+                arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DISPLAY_NAME, MediaStore.MediaColumns.SIZE, MediaStore.MediaColumns.RELATIVE_PATH),
                 selection,
                 arrayOf(settings.since.toString()),
                 "${MediaStore.MediaColumns._ID} ASC",
@@ -34,7 +34,7 @@ object MediaScanner {
                 while (c.moveToNext()) {
                     val size = c.getLong(2)
                     if (size <= 0) continue
-                    if (db.addIfNew(c.getLong(0), isVideo, c.getString(1) ?: "media", size, WorkerClient.newObjectId())) added++
+                    if (db.addIfNew(c.getLong(0), isVideo, c.getString(1) ?: "media", size, WorkerClient.newObjectId(), c.getString(3) ?: "")) added++
                 }
             }
         }

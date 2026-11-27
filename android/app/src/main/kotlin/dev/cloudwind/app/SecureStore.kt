@@ -54,13 +54,19 @@ class SecureStore(context: Context) {
         put("key", p.key)
         put("url", p.url.toByteArray())
         put("token", p.token.toByteArray())
+        p.lanFingerprint?.let { put("lan_fp", it.toByteArray()) } ?: sp.edit().remove("lan_fp").apply()
+        p.lanPort?.let { put("lan_port", it.toString().toByteArray()) } ?: sp.edit().remove("lan_port").apply()
     }
 
     fun loadPairing(): Pairing? {
         val key = get("key") ?: return null
         val url = get("url")?.toString(Charsets.UTF_8) ?: return null
         val token = get("token")?.toString(Charsets.UTF_8) ?: return null
-        return Pairing(key, url, token)
+        return Pairing(
+            key, url, token,
+            lanFingerprint = get("lan_fp")?.toString(Charsets.UTF_8),
+            lanPort = get("lan_port")?.toString(Charsets.UTF_8)?.toIntOrNull(),
+        )
     }
 
     fun clear() = sp.edit().clear().apply()

@@ -134,3 +134,70 @@ class LanEndToEndTest {
         assertFalse(File(pc.library, "bad.jpg").exists())
     }
 }
+
+/**
+ * The part that frees cloud quota: a file that is already in the cloud inbox arrives directly instead, and the PC
+ * tells the Worker, so the cloud copy is released. Runs the real agent against the live Worker; skipped without
+ * CLOUDWIND_BIN, CLOUDWIND_E2E_URL, CLOUDWIND_E2E_PHONE_TOKEN and CLOUDWIND_E2E_AGENT_TOKEN.
+ */
+class LanWithCloudTest {
+    private val bin = System.getenv("CLOUDWIND_BIN")
+    private val url = System.getenv("CLOUDWIND_E2E_URL")
+    private val phoneToken = System.getenv("CLOUDWIND_E2E_PHONE_TOKEN")
+    private val agentToken = System.getenv("CLOUDWIND_E2E_AGENT_TOKEN")
+    private var proc: Process? = null
+
+    @AfterTest fun stop() { proc?.destroy(); proc?.waitFor(5, TimeUnit.SECONDS) }
+
+    @Test
+    fun direct_arrival_releases_the_cloud_copy_and_cloud_items_are_left_to_the_pc() {
+        if (listOf(bin, url, phoneToken, agentToken).any { it.isNullOrEmpty() }) return
+        val dir = File.createTempFile("cwlive", "").also { it.delete(); it.mkdirs() }
+        val cfg = File(dir, "c.json")
+        ProcessBuilder(bin, "--config", cfg.path, "init", "--library", File(dir, "photos").path, "--worker-url", url!!)
+            .also { it.environment()["CLOUDWIND_AGENT_TOKEN"] = agentToken!! }.redirectErrorStream(true).start().waitFor()
+        val key = Base64.getUrlDecoder().decode(Regex("\"key\":\\s*\"([^\"]+)\"").find(cfg.readText())!!.groupValues[1])
+
+        // Start the PC first so its initial cloud pull finds nothing; then put two files in the cloud.
+        proc = ProcessBuilder(bin, "--config", cfg.path, "run", "--bind", "127.0.0.1", "--port", "0", "--interval", "3600").redirectErrorStream(true).start()
+        val line = proc!!.inputStream.bufferedReader().readLine()!!
+        val m = Regex("127\\.0\\.0\\.1:(\\d+) \\(certificate ([0-9a-f]{64})\\)").find(line)!!
+        val lan = LanClient("127.0.0.1", m.groupValues[1].toInt(), m.groupValues[2], lanAuthToken(key))
+        val cloud = WorkerClient(url, phoneToken!!)
+
+        fun uploadToCloud(name: String, data: ByteArray): String {
+            val enc = File.createTempFile("cwnd", ".enc")
+            try {
+                enc.outputStream().use { Crypto.encrypt(key, name, null, { ByteArrayInputStream(data) }, it) }
+                return WorkerClient.newObjectId().also { cloud.upload(it, enc) }
+            } finally { enc.delete() }
+        }
+        val a = ByteArray(40_000) { (it % 251).toByte() }
+        val b = ByteArray(55_000) { (it % 241).toByte() }
+        val objA = uploadToCloud("A.jpg", a)
+        val objB = uploadToCloud("B.jpg", b)
+        fun sha(d: ByteArray) = Crypto.hex(java.security.MessageDigest.getInstance("SHA-256").digest(d))
+
+        // The PC sees both in the cloud: "leave A to me" (it will pull), but we choose to force-send B directly.
+        val plan = lan.plan(listOf(LanPlanItem("a", sha(a), a.size.toLong(), objA), LanPlanItem("b", sha(b), b.size.toLong(), objB)))
+        assertEquals(listOf("a", "b"), plan.cloud, "both are in the cloud, so the PC offers to pull them itself")
+
+        // Send B directly anyway (as the phone does when the PC can't reach the cloud): the cloud copy is released.
+        assertEquals(LanSend.Stored(false), lan.send(sha(b), b.size.toLong(), 0, "B.jpg", null, objB, { ByteArrayInputStream(b) }))
+        val states = cloud.status().objects.associateBy { it.id }
+        assertEquals("synced", states[objB]?.state, "direct arrival marked the cloud object synced")
+        assertEquals("uploaded", states[objA]?.state, "A is still waiting for the PC's own cloud pull")
+        assertContentEquals(b, File(dir, "photos/B.jpg").readBytes())
+
+        // Tidy: let the PC pull A so the shared inbox isn't left with it.
+        val agent = AgentCleaner(url, agentToken!!)
+        agent.markSynced(objA)
+    }
+
+    private class AgentCleaner(private val base: String, private val token: String) {
+        fun markSynced(id: String) {
+            val c = java.net.URL("$base/v1/objects/$id/synced").openConnection() as java.net.HttpURLConnection
+            c.requestMethod = "POST"; c.setRequestProperty("authorization", "Bearer $token"); c.responseCode
+        }
+    }
+}

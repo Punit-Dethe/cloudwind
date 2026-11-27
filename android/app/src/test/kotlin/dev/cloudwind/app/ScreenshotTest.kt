@@ -78,4 +78,27 @@ class ScreenshotTest {
         ),
         dark = true,
     )
+
+    @Test
+    fun home_pc_on_network() = home(
+        UiState(
+            paired = true, server = server, directAvailable = true, pcOnNetwork = true, batteryUnrestricted = true, lastRunAt = now - 30,
+            counts = Counts(pending = 6, uploaded = 9, synced = 421, syncedBytes = 9_400_000_000L),
+            lastDirect = 38, lastCloud = 4, bigMb = 100, batteryMin = 50,
+            folders = listOf(FolderRow("DCIM/Camera/", 412, false), FolderRow("Download/", 9, true), FolderRow("Pictures/Screenshots/", 24, true)),
+            allFolders = true,
+        ),
+    )
+
+    @Test
+    fun home_away_with_held_back_files() = home(
+        UiState(
+            paired = true, server = server, directAvailable = true, pcOnNetwork = false, batteryUnrestricted = true, lastRunAt = now - 700,
+            counts = Counts(pending = 11, uploaded = 3, synced = 88, syncedBytes = 1_100_000_000L),
+            waiting = "4 waiting for Wi-Fi · 2 waiting for charge or battery · 3 waiting for your home network",
+            lastDirect = 0, lastCloud = 2, wifiOnly = true, batteryGate = true, batteryMin = 40,
+            folders = listOf(FolderRow("DCIM/Camera/", 90, false), FolderRow("Documents/Scans/", 3, true)),
+            allFolders = true,
+        ),
+    )
 }

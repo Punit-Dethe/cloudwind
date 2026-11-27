@@ -3,6 +3,20 @@ package dev.cloudwind.core
 /** Where a file may go. Camera photos are cloud-OK; sensitive folders are Home-only. */
 enum class Policy { CLOUD_OK, HOME_ONLY }
 
+/**
+ * Camera photos (`DCIM/…`) may use the cloud; everything else is Home-only unless the user flips that folder.
+ * Folders are matched exactly, ignoring a trailing slash. An explicit choice always beats the default.
+ */
+fun folderPolicy(relPath: String, homeOnly: Set<String>, cloudOk: Set<String>): Policy {
+    val p = relPath.trim().trimEnd('/')
+    return when {
+        p in homeOnly -> Policy.HOME_ONLY
+        p in cloudOk -> Policy.CLOUD_OK
+        p == "DCIM" || p.startsWith("DCIM/") -> Policy.CLOUD_OK
+        else -> Policy.HOME_ONLY
+    }
+}
+
 data class FileInfo(val size: Long, val policy: Policy, val inCloud: Boolean = false)
 
 /**
