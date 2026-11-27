@@ -35,6 +35,17 @@ struct Pending {
 struct PendingObj {
     id: String,
 }
+/// What the PC can learn about the phone and inbox in one call.
+#[derive(Deserialize, Debug)]
+pub struct Health {
+    pub phone_last_seen: Option<u64>,
+    pub pending_count: u64,
+    pub pending_bytes: u64,
+    pub inbox_bytes: u64,
+    pub cap_bytes: u64,
+    pub now: u64,
+}
+
 #[derive(Deserialize)]
 struct Created {
     #[serde(rename = "uploadId")]
@@ -54,6 +65,10 @@ impl RemoteInbox {
         self.agent
             .request(method, &format!("{}{}", self.base, path))
             .set("authorization", &format!("Bearer {}", self.token))
+    }
+
+    pub fn health(&self) -> Result<Health> {
+        Ok(self.req("GET", "/v1/health").call().context("reading inbox health")?.into_json()?)
     }
 
     /// Upload an encrypted file as the phone would. Returns the object id.

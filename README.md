@@ -94,6 +94,10 @@ What the clients do around those limits:
 - **Phone, newest first:** recent photos are backed up before an old backlog.
 - **Phone, file changing while it is read** (a video still recording): the upload is refused and retried later, instead of shipping a hash the PC would reject forever.
 - **Phone, low on free space:** big videos are staged as an encrypted temp copy; if there isn't room it skips them with a notice.
+- **Phone, big videos resume:** the encrypted copy is kept on disk and multipart progress is saved after every part, so an OS stop, network drop or app restart continues from the last finished part (fixed 8 MiB parts, as R2 requires equal sizes). If the server forgot the upload (abandoned for 24 h) it restarts once, automatically.
+- **Phone, run time:** plain background jobs get about 10 minutes, so a pass stops cleanly at its budget and queues a continuation. Foreground-service time is rationed with a local ledger because Android 15 allows only 6 h per 24 h for data-sync services; WorkManager 2.10 (which stops the service itself on timeout) is required.
+- **Phone, partial photo access (Android 14+):** if the user shared only some photos, the app says so and offers to ask for all of them, instead of looking healthy while skipping most of the library.
+- **Phone, stalled backups:** the home screen shows when the last backup finished and, if work is waiting but nothing succeeded for a day, a warning with the likely cause (battery limits) and a fix button.
 - **PC, flaky internet:** downloads resume from the byte where they stopped, with retry backoff.
 - **PC, corrupt or undecryptable object:** discarded, retried with growing backoff (1 min doubling to 6 h), never in a tight loop.
 - **PC, duplicates:** the agent remembers file hashes (`state/seen.txt`), so a re-paired phone or overlapping "back up older photos" doesn't create a second copy; it still confirms the object so the phone can delete.
@@ -101,9 +105,11 @@ What the clients do around those limits:
 
 Recommended: in the Cloudflare dashboard create a billing/usage notification for R2 so a misconfiguration can't surprise you.
 
+- **PC, watching the phone:** `cloudwind status` shows what is waiting and when the phone last contacted the inbox; `cloudwind sync` warns if the phone has been silent for two days. This catches the case the phone itself can't: its background jobs being killed.
+
 Tests: `worker/limits-test.sh` (needs a local Worker with tiny caps, see its header), `worker/smoke.sh`, `cargo test`, `cd android && ./gradlew :core:test`.
 
-## Screenshots
+## Screenshots (`docs/screenshots/`)
 
 Phone screens are rendered from the real Compose code with sample data (`cd android && ./gradlew :app:recordPaparazziDebug`;
 `verifyPaparazziDebug` flags unintended UI changes). The PC image is the real CLI output with demo values.

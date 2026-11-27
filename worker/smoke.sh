@@ -40,4 +40,6 @@ curl -s "${P[@]}" $BASE/v1/status | grep -q "\"id\":\"$ID\",\"state\":\"uploaded
 ok "$(code -X POST "${A[@]}" $BASE/v1/objects/$ID/synced)" 200 "agent marks synced"
 curl -s "${P[@]}" $BASE/v1/status | grep -q "\"id\":\"$ID\",\"state\":\"synced\"" && echo "ok   status: synced"
 curl -s "${A[@]}" $BASE/v1/pending | grep -q $ID && { echo "FAIL still pending"; exit 1; } || echo "ok   no longer pending"
+# tidy: the multipart test object is random bytes the agent could never decrypt
+curl -s -o /dev/null -X POST "${A[@]}" $BASE/v1/objects/$ID2/synced
 echo "ALL PASSED"
