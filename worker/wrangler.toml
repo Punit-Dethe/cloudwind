@@ -1,0 +1,19 @@
+name = "cloudwind"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+
+[vars]
+GRACE_DAYS = "7"
+
+[[r2_buckets]]
+binding = "INBOX"
+bucket_name = "cloudwind-inbox"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "cloudwind-status"
+database_id = "867fa03a-a840-44dd-b885-199a6073f6b5"
+
+# Daily cleanup of inbox copies that were synced more than GRACE_DAYS ago.
+[triggers]
+crons = ["17 3 * * *"]
