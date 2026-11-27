@@ -5,7 +5,7 @@ import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 
-/** One row per photo/video the app tracks. States: pending -> uploaded -> synced. */
+/** One row per photo/video the app tracks. States: pending -> uploaded -> synced, or skipped (too large). */
 data class Photo(
     val mediaId: Long,
     val isVideo: Boolean,
@@ -17,7 +17,12 @@ data class Photo(
     val syncedAt: Long?,
 )
 
-data class Counts(val pending: Int = 0, val uploaded: Int = 0, val synced: Int = 0, val syncedBytes: Long = 0, val pendingBytes: Long = 0)
+data class Counts(
+    val pending: Int = 0, val uploaded: Int = 0, val synced: Int = 0,
+    val syncedBytes: Long = 0, val pendingBytes: Long = 0,
+    /** Items the inbox will never accept (over the per-file limit). */
+    val skipped: Int = 0,
+)
 
 class PhotoDb(context: Context) : SQLiteOpenHelper(context.applicationContext, "photos.db", null, 1) {
     override fun onCreate(db: SQLiteDatabase) {
@@ -57,13 +62,19 @@ class PhotoDb(context: Context) : SQLiteOpenHelper(context.applicationContext, "
 
     private val cols = "media_id,is_video,name,size,state,object_id,uploaded_at,synced_at"
 
-    fun byState(state: String, limit: Int = 100_000): List<Photo> =
-        readableDatabase.rawQuery("SELECT $cols FROM photos WHERE state=? ORDER BY media_id LIMIT $limit", arrayOf(state)).use { c ->
+    /** `newestFirst` makes recent photos reach the cloud before an old backlog. */
+    fun byState(state: String, limit: Int = 100_000, newestFirst: Boolean = false): List<Photo> =
+        readableDatabase.rawQuery("SELECT $cols FROM photos WHERE state=? ORDER BY media_id ${if (newestFirst) "DESC" else "ASC"} LIMIT $limit", arrayOf(state)).use { c ->
             buildList { while (c.moveToNext()) add(read(c)) }
         }
 
     fun markUploaded(mediaId: Long, at: Long) {
         writableDatabase.execSQL("UPDATE photos SET state='uploaded', uploaded_at=?, error=NULL WHERE media_id=? AND state='pending'", arrayOf(at, mediaId))
+    }
+
+    /** Permanently set aside (e.g. bigger than the inbox accepts); never retried. */
+    fun markSkipped(mediaId: Long, reason: String) {
+        writableDatabase.execSQL("UPDATE photos SET state='skipped', error=? WHERE media_id=? AND state='pending'", arrayOf(reason, mediaId))
     }
 
     fun setError(mediaId: Long, error: String) {
@@ -101,6 +112,7 @@ class PhotoDb(context: Context) : SQLiteOpenHelper(context.applicationContext, "
                 "pending" -> r = r.copy(pending = c.getInt(1), pendingBytes = c.getLong(2))
                 "uploaded" -> r = r.copy(uploaded = c.getInt(1))
                 "synced" -> r = r.copy(synced = c.getInt(1), syncedBytes = c.getLong(2))
+                "skipped" -> r = r.copy(skipped = c.getInt(1))
             }
         }
         r

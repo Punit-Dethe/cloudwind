@@ -28,6 +28,21 @@ class Settings(context: Context) {
         get() = sp.getString("last_error", null)
         set(v) = sp.edit().putString("last_error", v).apply()
 
+    /** True when the last pass found the cloud inbox too full for something. Not an error: it clears itself. */
+    var inboxFull: Boolean
+        get() = sp.getBoolean("inbox_full", false)
+        set(v) = sp.edit().putBoolean("inbox_full", v).apply()
+
+    /** Largest single file the inbox accepts, as last reported by the server (0 = unknown). */
+    var maxObjectBytes: Long
+        get() = sp.getLong("max_object", 0)
+        set(v) = sp.edit().putLong("max_object", v).apply()
+
+    /** Gentle heads-up that isn't a failure (e.g. phone is low on space for a big video). */
+    var notice: String?
+        get() = sp.getString("notice", null)
+        set(v) = sp.edit().putString("notice", v).apply()
+
     var lastRunAt: Long
         get() = sp.getLong("last_run", 0)
         set(v) = sp.edit().putLong("last_run", v).apply()

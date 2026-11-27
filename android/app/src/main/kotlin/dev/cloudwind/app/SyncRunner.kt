@@ -9,7 +9,15 @@ import dev.cloudwind.core.WorkerClient
 import java.io.File
 import java.io.IOException
 
-/** One backup pass: find new media, encrypt + upload what's pending, then pull status back. */
+/**
+ * One backup pass: find new media, encrypt + upload what's pending (newest first), then pull
+ * status back. It is built to keep making progress around problems:
+ *  - inbox full: skip items that don't fit, upload smaller ones, report "waiting for PC"
+ *  - file over the per-file limit: set aside permanently, never retried
+ *  - phone too low on space to stage a big encrypted copy: skip it for now
+ *  - file still being written: skip it for now
+ *  - rate limited / server trouble / no network: stop and let WorkManager retry with backoff
+ */
 class SyncRunner(private val context: Context) {
     private val settings = Settings(context)
     private val db = PhotoDb(context)
@@ -18,13 +26,16 @@ class SyncRunner(private val context: Context) {
     sealed interface Outcome {
         data object NotPaired : Outcome
         data class Done(val uploaded: Int) : Outcome
-        /** Network trouble or server hiccup; WorkManager should retry later. */
+        /** Network trouble, rate limit or server hiccup; WorkManager should retry later. */
         data class Retry(val message: String) : Outcome
         /** Bad token or key: retrying won't help until the user re-pairs. */
         data class AuthFailed(val message: String) : Outcome
     }
 
     fun pendingCount() = db.counts().pending
+
+    /** Encrypted size is the plaintext plus a 16-byte tag per 1 MiB chunk plus small headers. */
+    private fun encryptedSize(size: Long) = size + (size / (1 shl 20) + 1) * 16 + 1024
 
     /** `onProgress(done, total, name)` is called before each file. */
     fun run(onProgress: (Int, Int, String) -> Unit = { _, _, _ -> }, isStopped: () -> Boolean = { false }): Outcome {
@@ -34,23 +45,44 @@ class SyncRunner(private val context: Context) {
 
         MediaScanner.scan(resolver, db, settings)
 
-        val pending = db.byState("pending")
+        // Learn the server's limits up front so we don't encrypt files that can't be accepted.
+        val limits = try { client.limits() } catch (e: HttpError) { return httpFailure(e) } catch (e: IOException) { return fail(Outcome.Retry(e.message ?: "network error")) }
+        settings.maxObjectBytes = limits.max_object_bytes
+        var free = limits.free_bytes
+        var inboxFull = false
+        var notice: String? = null
+
+        val pending = db.byState("pending", newestFirst = true)
         var uploaded = 0
         for ((i, p) in pending.withIndex()) {
             if (isStopped()) return Outcome.Retry("stopped")
+            val need = encryptedSize(p.size)
+            if (need > limits.max_object_bytes) { db.markSkipped(p.mediaId, "too_large"); continue }
+            if (need > free) { inboxFull = true; continue } // a smaller item later in the list may still fit
+            if (context.cacheDir.usableSpace < need + (64L shl 20)) {
+                db.setError(p.mediaId, "low_phone_space")
+                notice = "Not enough free space on this phone to prepare “${p.name}” for upload. Free some space and it will continue."
+                continue
+            }
             onProgress(i, pending.size, p.name)
             try {
                 uploadOne(client, pairing.key, p)
                 db.markUploaded(p.mediaId, System.currentTimeMillis() / 1000)
                 uploaded++
+                free -= need
             } catch (e: HttpError) {
-                if (e.code == 401 || e.code == 403) return fail(Outcome.AuthFailed("The Cloudwind inbox rejected this phone's token. Pair again."))
-                db.setError(p.mediaId, e.message ?: "upload failed")
-                if (e.code >= 500 || e.code == 429) return fail(Outcome.Retry(e.message ?: "server error"))
+                when {
+                    e.isInboxFull -> { free = e.freeBytes ?: 0; inboxFull = true }
+                    e.isTooLarge -> db.markSkipped(p.mediaId, "too_large")
+                    e.code == 401 || e.code == 403 || e.code == 429 || e.code >= 500 -> return httpFailure(e)
+                    else -> db.setError(p.mediaId, e.message ?: "upload failed")
+                }
             } catch (e: SecurityException) {
                 return fail(Outcome.AuthFailed("Photo access was revoked. Grant it again in Settings."))
+            } catch (e: Crypto.SourceChangedException) {
+                db.setError(p.mediaId, "still being written") // e.g. a video that is still recording; next pass
             } catch (e: IOException) {
-                // A missing file (deleted since the scan) is skipped; network errors stop the pass.
+                // A missing file (deleted since the scan) is dropped; network errors stop the pass.
                 if (!MediaScanner.exists(resolver, p.mediaId, p.isVideo)) { db.remove(listOf(p.mediaId)); continue }
                 return fail(Outcome.Retry(e.message ?: "network error"))
             }
@@ -59,14 +91,21 @@ class SyncRunner(private val context: Context) {
         try {
             refreshStatus(client)
         } catch (e: HttpError) {
-            if (e.code == 401 || e.code == 403) return fail(Outcome.AuthFailed("The Cloudwind inbox rejected this phone's token. Pair again."))
-            return fail(Outcome.Retry(e.message ?: "status failed"))
+            return httpFailure(e)
         } catch (e: IOException) {
             return fail(Outcome.Retry(e.message ?: "network error"))
         }
+        settings.inboxFull = inboxFull
+        settings.notice = notice
         settings.lastError = null
         settings.lastRunAt = System.currentTimeMillis() / 1000
         return Outcome.Done(uploaded)
+    }
+
+    private fun httpFailure(e: HttpError): Outcome = when {
+        e.code == 401 || e.code == 403 -> fail(Outcome.AuthFailed("The Cloudwind inbox rejected this phone's token. Pair again."))
+        e.isRateLimited -> fail(Outcome.Retry("Too many requests; pausing for a bit."))
+        else -> fail(Outcome.Retry(e.message ?: "server error"))
     }
 
     private fun fail(o: Outcome): Outcome {

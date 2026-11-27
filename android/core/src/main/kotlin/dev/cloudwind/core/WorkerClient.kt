@@ -23,10 +23,33 @@ data class ObjectStatus(
     val synced_at: Long? = null,
 )
 
+/** Inbox limits as configured on the Worker. */
 @Serializable
-data class StatusResponse(val objects: List<ObjectStatus>, val inbox_bytes: Long = 0)
+data class Limits(
+    val cap_bytes: Long = 0,
+    val soft_bytes: Long = 0,
+    val free_bytes: Long = Long.MAX_VALUE,
+    val max_object_bytes: Long = Long.MAX_VALUE,
+)
 
-class HttpError(val code: Int, message: String) : IOException("HTTP $code: $message")
+@Serializable
+data class StatusResponse(val objects: List<ObjectStatus>, val inbox_bytes: Long = 0, val limits: Limits = Limits())
+
+/**
+ * A non-success reply. `reason` is the Worker's machine-readable error ("inbox_full",
+ * "object_too_large", "rate_limited", ...). `freeBytes` is set when the inbox is full.
+ */
+class HttpError(
+    val code: Int,
+    message: String,
+    val reason: String? = null,
+    val freeBytes: Long? = null,
+    val retryAfterSecs: Int? = null,
+) : IOException("HTTP $code: $message") {
+    val isInboxFull get() = code == 507
+    val isTooLarge get() = code == 413
+    val isRateLimited get() = code == 429
+}
 
 /** Phone-side client for the Cloudwind Worker. Uses only java.net so it runs anywhere. */
 class WorkerClient(baseUrl: String, private val token: String) {
@@ -57,7 +80,15 @@ class WorkerClient(baseUrl: String, private val token: String) {
     private fun body(c: HttpURLConnection, okCodes: Set<Int>): String {
         val code = c.responseCode
         val text = (if (code in 200..299) c.inputStream else c.errorStream)?.bufferedReader()?.use { it.readText() } ?: ""
-        if (code !in okCodes) throw HttpError(code, text.take(200))
+        if (code !in okCodes) {
+            val obj = try { json.parseToJsonElement(text) as? JsonObject } catch (e: Exception) { null }
+            fun field(n: String) = (obj?.get(n) as? JsonPrimitive)?.content
+            throw HttpError(
+                code, text.take(200), reason = field("error"),
+                freeBytes = field("free_bytes")?.toLongOrNull(),
+                retryAfterSecs = c.getHeaderField("retry-after")?.toIntOrNull() ?: field("retry_after")?.toIntOrNull(),
+            )
+        }
         return text
     }
 
@@ -100,6 +131,11 @@ class WorkerClient(baseUrl: String, private val token: String) {
             return
         }
         val c = open("POST", "/v1/objects/$id/multipart")
+        c.doOutput = true
+        c.setRequestProperty("content-type", "application/json")
+        val start = "{\"size\":$size}".toByteArray() // the Worker reserves this much of the inbox cap
+        c.setFixedLengthStreamingMode(start.size)
+        c.outputStream.use { it.write(start) }
         val up = try {
             val text = body(c, setOf(201))
             (json.parseToJsonElement(text) as JsonObject)["uploadId"]!!.let { (it as JsonPrimitive).content }
@@ -122,6 +158,9 @@ class WorkerClient(baseUrl: String, private val token: String) {
         done.outputStream.use { it.write(payload) }
         try { body(done, setOf(201)) } catch (e: HttpError) { if (e.code != 409) throw e }
     }
+
+    /** Current inbox limits and free space, without listing objects. */
+    fun limits(): Limits = status(since = Long.MAX_VALUE / 2).limits
 
     fun status(since: Long = 0): StatusResponse {
         val c = open("GET", "/v1/status?since=$since")

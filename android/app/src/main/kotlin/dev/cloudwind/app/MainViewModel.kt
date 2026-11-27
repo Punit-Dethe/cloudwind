@@ -25,6 +25,9 @@ data class UiState(
     val busy: Boolean = false,
     val message: String? = null,
     val lastError: String? = null,
+    val inboxFull: Boolean = false,
+    val notice: String? = null,
+    val maxObjectBytes: Long = 0,
 )
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
@@ -51,6 +54,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     inboxBytes = SyncRunner.lastInboxBytes,
                     wifiOnly = settings.wifiOnly, chargingOnly = settings.chargingOnly, allFolders = settings.allFolders,
                     lastError = settings.lastError,
+                    inboxFull = settings.inboxFull, notice = settings.notice, maxObjectBytes = settings.maxObjectBytes,
                 )
             }
         }

@@ -193,9 +193,19 @@ fun Home(vm: MainViewModel, ui: UiState) {
         if (c.uploaded > 0) {
             Text("Waiting for your PC to pick up ${c.uploaded} item(s). Turn it on and run Cloudwind.", style = MaterialTheme.typography.bodyMedium)
         }
-        if (ui.inboxBytes > 8L shl 30) {
-            Text("Cloud inbox is ${formatBytes(ui.inboxBytes)} full (free tier is 10 GB). Turn on your PC so it can catch up.", color = MaterialTheme.colorScheme.error)
+        if (ui.inboxFull) {
+            Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Cloud inbox is full", fontWeight = FontWeight.SemiBold)
+                    Text("Waiting for your PC to catch up. Smaller photos keep uploading; big videos go up once there is room. Your originals stay safe on this phone.", style = MaterialTheme.typography.bodySmall)
+                }
+            }
         }
+        if (c.skipped > 0) {
+            val max = if (ui.maxObjectBytes > 0) " (limit ${formatBytes(ui.maxObjectBytes)} per file)" else ""
+            Text("${c.skipped} item(s) are too large for the inbox$max and were not uploaded. Copy them to your PC another way.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        }
+        ui.notice?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
         ui.lastError?.let { Text("Last problem: $it", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
         ui.message?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
 

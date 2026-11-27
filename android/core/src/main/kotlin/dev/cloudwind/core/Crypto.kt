@@ -28,6 +28,9 @@ object Crypto {
 
     class CryptoException(message: String) : Exception(message)
 
+    /** The file changed while we were encrypting it. Try again later; nothing was uploaded. */
+    class SourceChangedException(name: String) : java.io.IOException("$name changed while being read")
+
     // ---- HChaCha20 -------------------------------------------------------
 
     private fun rotl(v: Int, n: Int) = (v shl n) or (v ushr (32 - n))
@@ -121,7 +124,19 @@ object Crypto {
     ): Meta {
         val (sha, size) = open().use { hash(it) }
         val meta = Meta(name, size, sha, modified)
-        open().use { encryptWithMeta(key, meta, it, out, chunk, random) }
+        // A file still being written (e.g. a video) can change between the two passes. The PC would
+        // reject the mismatch forever, so hash what we actually encrypt and refuse to ship a bad file.
+        val md = MessageDigest.getInstance("SHA-256")
+        var seen = 0L
+        open().use { raw ->
+            val watching = object : java.io.FilterInputStream(raw) {
+                override fun read(): Int = super.read().also { if (it >= 0) { md.update(it.toByte()); seen++ } }
+                override fun read(b: ByteArray, off: Int, len: Int): Int =
+                    super.read(b, off, len).also { if (it > 0) { md.update(b, off, it); seen += it } }
+            }
+            encryptWithMeta(key, meta, watching, out, chunk, random)
+        }
+        if (seen != size || hex(md.digest()) != sha) throw SourceChangedException(name)
         return meta
     }
 
