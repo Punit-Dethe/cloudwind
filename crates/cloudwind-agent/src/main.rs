@@ -128,7 +128,15 @@ fn main() -> Result<()> {
                 "token": cfg.worker.as_ref().and_then(|w| w.phone_token.as_ref()),
             });
             use cloudwind_core::base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-            println!("cloudwind://pair/{}", URL_SAFE_NO_PAD.encode(payload.to_string()));
+            if cfg.worker.as_ref().and_then(|w| w.phone_token.as_ref()).is_none() {
+                bail!("no phone token in config: re-run init with --phone-token (or CLOUDWIND_PHONE_TOKEN)");
+            }
+            let code = format!("cloudwind://pair/{}", URL_SAFE_NO_PAD.encode(payload.to_string()));
+            let qr = qrcode::QrCode::new(code.as_bytes())?
+                .render::<qrcode::render::unicode::Dense1x2>()
+                .quiet_zone(true)
+                .build();
+            println!("{qr}\nScan this with the Cloudwind app. It contains your encryption key: don't share a screenshot.\n\nOr paste this code into the app:\n{code}");
         }
         Cmd::Sync => {
             let (cfg, key) = load(&path)?;

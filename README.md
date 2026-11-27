@@ -13,7 +13,8 @@ Full plan: [docs/PLAN.md](docs/PLAN.md)
 - [x] `cloudwind` agent: `init`, `pair`, `sync`, `upload` (phone simulator), local-folder or Worker inbox
 - [x] Cloudflare Worker (`worker/`): R2 inbox + D1 status, phone/agent token roles, multipart uploads, daily purge after the grace period
 - [x] Verified end to end on Cloudflare: 300 KB photo and 70 MB video (multipart) round-trip byte-identical
-- [ ] Android app
+- [x] Android app (Kotlin + Compose): QR/paste pairing, Keystore-wrapped key, MediaStore scan, encrypt + upload, WorkManager (periodic + new-photo trigger + foreground for backlogs), status back from the PC, batch "Free up space" with one system prompt per 500 photos. **Not yet compiled or run on a device** — see below
+- [x] `cloudwind pair` prints a QR code for the phone
 - [ ] Tray icon, start at login, OS keychain, QR pairing, Immich/PhotoPrism presets
 
 ## Architecture note: uploads go through the Worker in parts
@@ -51,3 +52,19 @@ target/release/cloudwind pair                    # pairing payload for the phone
 ```
 
 Add `--inbox /some/folder` instead of `--worker-url` to test with a local folder and no cloud.
+
+## Android app
+
+`android/` is a Gradle project with two modules:
+
+- `:core` — plain Kotlin/JVM: file format, in-house ChaCha20-Poly1305, pairing, Worker client. Builds and tests with only a JDK
+  (`cd android && ./gradlew :core:test`). Byte-compatible with the Rust crate in both directions (fixtures in both test suites).
+- `:app` — the Android UI/background code. Needs the Android SDK (`ANDROID_HOME` or `local.properties`); build with
+  `./gradlew :app:assembleDebug`. minSdk 30 (Android 11, for batch delete with one prompt).
+
+Live end-to-end check (Kotlin client -> Worker -> Rust agent, includes a 70 MB multipart upload):
+
+```sh
+CLOUDWIND_E2E_URL=https://cloudwind.<you>.workers.dev CLOUDWIND_E2E_PHONE_TOKEN=... CLOUDWIND_E2E_DIR=<dir with IMG_*/VID_* files> \
+  ./gradlew :core:test --tests '*E2eTest*'
+```
