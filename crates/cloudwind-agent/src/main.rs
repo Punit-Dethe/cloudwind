@@ -115,7 +115,9 @@ fn config_path(cli: &Cli) -> Result<PathBuf> {
 fn load(path: &PathBuf) -> Result<(Config, LibraryKey)> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("no config at {path:?}; run `cloudwind init` first"))?;
-    let cfg: Config = serde_json::from_str(&raw)?;
+    // Notepad and Windows PowerShell often save UTF-8 with a byte-order mark, which serde_json rejects.
+    let cfg: Config = serde_json::from_str(raw.trim_start_matches('\u{feff}'))
+        .with_context(|| format!("could not read {path:?}"))?;
     let key = LibraryKey::from_base64(&cfg.key)?;
     Ok((cfg, key))
 }
