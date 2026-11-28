@@ -9,9 +9,10 @@ and the PC collects them the next time it's on. Once your PC has a verified copy
 Your photo app (Immich, LibrePhotos, PhotoPrism, Nextcloud, or plain File Explorer) just reads that folder.
 
 <p>
-  <img src="docs/screenshots/phone-1-pairing.png" width="220" alt="Pairing screen: scan a QR code from your PC">
-  <img src="docs/screenshots/phone-8-pc-on-home-network.png" width="220" alt="Home screen while the PC is on the home network: photos are sent directly">
-  <img src="docs/screenshots/phone-3-home-safe-to-delete.png" width="220" alt="Home screen with 148 photos verified on the PC and safe to delete">
+  <img src="docs/screenshots/phone-8-pc-on-home-network.png" width="195" alt="Sync tab: 3-color precision ring while connected directly to your home PC">
+  <img src="docs/screenshots/phone-10-folders.png" width="195" alt="Folders tab: auto-discovered device folders and custom folder picker">
+  <img src="docs/screenshots/phone-11-history.png" width="195" alt="History tab: 4-column backed-up photo grid with cached preview thumbnails">
+  <img src="docs/screenshots/phone-12-settings-dark.png" width="195" alt="Settings tab in OLED Dark Mode: Direct to PC, Start Delay, Cloud Uploads, and Home PC">
 </p>
 
 ## Why Cloudwind
@@ -116,13 +117,15 @@ That's it. Take a photo: within about a minute it should be in your photo folder
 
 | Control | What it does |
 | --- | --- |
-| **Back up now** | Starts a pass right away instead of waiting. Cloudwind also runs by itself every 15 minutes and whenever you take a photo. |
-| **Also back up older photos** | By default only photos taken after pairing are backed up. This adds your existing library, newest first. |
+| **Back up now** | Starts a pass right away instead of waiting. Cloudwind also runs automatically whenever new photos finish saving and every 15 minutes as a safety net. |
+| **Back up older photos** | By default only photos taken after pairing are backed up. This adds your existing library, newest first. |
 | **Free up space** | Moves photos your PC has verified to the phone's trash (restorable for about 30 days). Android asks you once. Photos you edited after backup are never included. |
-| **Big files** | Size above which a file counts as "big" (default 50 MB). Small photos always go right away. |
-| **Wi-Fi only** | Big files wait for Wi-Fi before uploading to the cloud. Turn it off if you have unlimited mobile data. Direct sends at home are never held back by this. |
-| **Wait for charging or enough battery** | Big files wait until the phone is charging or above the battery level you choose (30–90%, default 40%). |
-| **Include all folders** | Backs up more than the camera, such as screenshots and downloads. These folders are **Home only** by default: they go straight to your PC at home and never touch the cloud. Flip any folder to allow the cloud. |
+| **Folders** | Automatically discovers Camera, WhatsApp, Telegram, Canva, Screenshots, Downloads, and more, plus **+ Add Folder** for any custom folder. Each folder can optionally be marked **Home Wi-Fi Only** so it never touches the cloud. |
+| **History** | 4-column photo grid of backed-up items with compact cached WebP previews (capped at 500 items) that stay viewable even after freeing local phone storage, plus single-item **Remove from Phone**. |
+| **Start Delay** | Optional grace period (Off to 10 min, default 1 min) before uploading brand-new shots so quick deletes or edits aren't uploaded twice. |
+| **Large Files** | Size above which a file counts as "large" (default 50 MB). Small photos and home-network transfers always go right away. |
+| **Wi-Fi Only** | Large files wait for Wi-Fi before uploading to the cloud. Turn it off if you have unlimited mobile data. Direct sends at home are never held back by this. |
+| **Wait for Charger / Or Battery Above** | Large files wait until the phone is charging or above the battery level you choose (30–90%, default 40%). |
 
 The home screen always tells you what's going on: how many items are waiting, how many are in the cloud, and how many
 are on your PC. It also shows what is being held back and why ("waiting for Wi-Fi", "waiting for your home network").
@@ -194,8 +197,8 @@ days, `cloudwind status` on the PC warns you too.
 **A big video is "waiting for Wi-Fi".**
 That's the **Wi-Fi only** setting for big files. Connect to Wi-Fi, raise the **Big files** size, or turn the setting off.
 
-**Screenshots or downloads say "waiting for your home network".**
-Those folders are **Home only** by default. Either let them go when you're home, or flip the folder to allow the cloud.
+**A folder says "waiting for your home network".**
+That folder has **Home Wi-Fi Only** enabled. Either let it sync when you're home, or open the folder in the **Folders** tab and turn **Home Wi-Fi Only** off.
 
 **The PC prints `FAILED … not a Cloudwind file`.**
 Something in the inbox was encrypted with a different key, for example left over from a test or an old pairing. The PC
@@ -209,21 +212,21 @@ The edited version is backed up again as a second file. The original copy on the
 Cloudwind is an early, working build.
 
 - **Done:**
-  - Encrypted cloud backup.
-  - Direct sync on the home network.
+  - Encrypted cloud backup and direct sync on the home network.
   - Resumable uploads for big videos.
-  - Batch "Free up space".
-  - Battery, Wi-Fi and folder rules.
-  - Warnings when backups stall.
+  - Native Windows PC desktop app (`cloudwind-app.exe`), system tray, local web dashboard, and Start with Windows (`cloudwind install --autostart`).
+  - Auto-discovered per-folder selection + custom SAF folder picker.
+  - Persistent History grid with compact 320px WebP preview cache (survives phone storage cleanup).
+  - New-photo grace period (Start Delay), proactive in-place edit detection, and batch / single-item **Free up space**.
+  - Battery, Wi-Fi, and Home Wi-Fi Only folder rules + stall warnings.
 - **Tested:**
   - On real hardware: direct sync from an Android 16 phone to a Windows 11 PC.
   - In automated tests against the live cloud inbox: the cloud path end to end, including big-video resume.
   - Many more cases in automated tests.
   - Real-phone testing of the cloud path is in progress.
 - **Not yet:**
-  - A tray icon and start-at-login for the PC.
   - Finding the PC without internet (mDNS).
-  - Ready-made downloads.
+  - Ready-made release installers.
   - Built-in photo app presets.
   - Documents and PDFs.
   - Later: **Send to PC**, to share any file from your phone straight to your PC.
