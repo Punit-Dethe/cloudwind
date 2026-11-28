@@ -10,6 +10,11 @@ import android.content.Context
 class Settings(context: Context) {
     private val sp = context.applicationContext.getSharedPreferences("cloudwind_settings", Context.MODE_PRIVATE)
 
+    /** Whether direct home Wi-Fi transfers to the PC are enabled (default on). */
+    var directEnabled: Boolean
+        get() = sp.getBoolean("direct_enabled", true)
+        set(v) = sp.edit().putBoolean("direct_enabled", v).apply()
+
     var wifiOnly: Boolean
         get() = sp.getBoolean("wifi_only", true)
         set(v) = sp.edit().putBoolean("wifi_only", v).apply()
@@ -27,6 +32,11 @@ class Settings(context: Context) {
     var bigMb: Int
         get() = sp.getInt("big_mb", 50)
         set(v) = sp.edit().putInt("big_mb", v.coerceAtLeast(1)).apply()
+
+    /** Grace period (seconds) before backing up newly captured/edited photos in the background. */
+    var newPhotoDelaySecs: Int
+        get() = sp.getInt("new_photo_delay_secs", SettleWindow.DEFAULT_DELAY_SECS).coerceIn(0, 600)
+        set(v) = sp.edit().putInt("new_photo_delay_secs", v.coerceIn(0, 600)).apply()
 
     /** `wifiOnly` is now "Wi-Fi only for big files". */
     val gates: Gates
@@ -73,10 +83,55 @@ class Settings(context: Context) {
         get() = sp.getInt("waiting_count", 0)
         set(v) = sp.edit().putInt("waiting_count", v).apply()
 
-    /** false = only DCIM (camera); true = every folder with photos/videos. */
+    /** false = only DCIM (camera); true = every folder with photos/videos (legacy fallback before explicit selection). */
     var allFolders: Boolean
         get() = sp.getBoolean("all_folders", false)
         set(v) { sp.edit().putBoolean("all_folders", v).apply(); resetScan() }
+
+    // ---- explicit per-folder selection + manually added SAF folders ----
+    var hasExplicitFolderSelection: Boolean
+        get() = sp.getBoolean("explicit_folders", false)
+        set(v) = sp.edit().putBoolean("explicit_folders", v).apply()
+
+    var selectedFolders: Set<String>
+        get() = folderSet("selected_folders").map { FolderSelection.norm(it) }.filter { it.isNotEmpty() }.toSet()
+        set(v) {
+            sp.edit()
+                .putBoolean("explicit_folders", true)
+                .putStringSet("selected_folders", v.map { FolderSelection.norm(it) }.filter { it.isNotEmpty() }.toSet())
+                .apply()
+            resetScan()
+        }
+
+    fun isFolderSelected(relPath: String): Boolean =
+        FolderSelection.isSelected(relPath, hasExplicitFolderSelection, selectedFolders, allFolders)
+
+    /** Persisted manually picked SAF folders: map of normalized relPath -> tree URI string. */
+    fun safFolders(): Map<String, String> =
+        folderSet("saf_folders").mapNotNull { entry ->
+            val idx = entry.indexOf('|')
+            if (idx <= 0 || idx >= entry.lastIndex) null
+            else FolderSelection.norm(entry.substring(0, idx)) to entry.substring(idx + 1)
+        }.toMap()
+
+    fun addSafFolder(relPath: String, treeUri: String) {
+        val n = FolderSelection.norm(relPath)
+        if (n.isEmpty()) return
+        val map = safFolders().toMutableMap()
+        map[n] = treeUri
+        saveSafFolders(map)
+    }
+
+    fun removeSafFolder(relPath: String) {
+        val n = FolderSelection.norm(relPath)
+        val map = safFolders().toMutableMap()
+        if (map.remove(n) != null) saveSafFolders(map)
+    }
+
+    private fun saveSafFolders(map: Map<String, String>) {
+        val encoded = map.entries.map { (k, v) -> "$k|$v" }.toSet()
+        sp.edit().putStringSet("saf_folders", encoded).apply()
+    }
 
     // ---- incremental scanning: MediaStore's per-volume change counter ----
     /** Last MediaStore generation scanned on a volume, valid only for the same MediaStore version. */

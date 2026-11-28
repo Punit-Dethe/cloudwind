@@ -23,12 +23,14 @@ object Scheduler {
     private const val ON_CHANGE = "cloudwind-on-change"
     private const val NOW = "cloudwind-now"
     private const val CONTINUE = "cloudwind-continue"
+    private const val SETTLE = "cloudwind-settle"
     const val TAG_TRIGGER = "cloudwind-trigger"
+    const val TAG_MANUAL = "cloudwind-manual"
 
     /**
      * Jobs no longer carry Wi-Fi/charging rules: the runner applies them per file, so small photos still go
      * and direct (LAN) transfers work even on a network with no internet. The only constraint left is the
-     * new-photo trigger.
+     * new-photo trigger, debounced briefly so camera HDR/IS_PENDING writes finish before we scan.
      */
     private fun constraints(@Suppress("UNUSED_PARAMETER") settings: Settings, trigger: Boolean = false, @Suppress("UNUSED_PARAMETER") ignoreRules: Boolean = false) =
         Constraints.Builder().apply {
@@ -36,6 +38,8 @@ object Scheduler {
             if (trigger) {
                 addContentUriTrigger(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, true)
                 addContentUriTrigger(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, true)
+                setTriggerContentUpdateDelay(3, TimeUnit.SECONDS)
+                setTriggerContentMaxDelay(15, TimeUnit.SECONDS)
             }
         }.build()
 
@@ -70,13 +74,26 @@ object Scheduler {
         )
     }
 
-    /** "Back up now": runs immediately on any connection, ignoring the Wi-Fi/charging rules. */
+    /** "Back up now": runs immediately on any connection, bypassing the new-photo grace period. */
     fun backUpNow(context: Context) {
         WorkManager.getInstance(context).enqueueUniqueWork(
             NOW, ExistingWorkPolicy.REPLACE,
             OneTimeWorkRequestBuilder<SyncWorker>()
                 .setConstraints(constraints(Settings(context), ignoreRules = true))
+                .addTag(TAG_MANUAL)
                 .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
+                .build(),
+        )
+    }
+
+    /** Wake right after the earliest new-photo grace period expires so items never wait 15 minutes. */
+    fun scheduleAfterDelay(context: Context, delaySecs: Long) {
+        val secs = (delaySecs + 2L).coerceIn(3L, 3600L)
+        WorkManager.getInstance(context).enqueueUniqueWork(
+            SETTLE, ExistingWorkPolicy.REPLACE,
+            OneTimeWorkRequestBuilder<SyncWorker>()
+                .setInitialDelay(secs, TimeUnit.SECONDS)
+                .setConstraints(constraints(Settings(context)))
                 .build(),
         )
     }
@@ -93,7 +110,7 @@ object Scheduler {
 
     fun cancelAll(context: Context) {
         val wm = WorkManager.getInstance(context)
-        wm.cancelUniqueWork(PERIODIC); wm.cancelUniqueWork(ON_CHANGE); wm.cancelUniqueWork(NOW); wm.cancelUniqueWork(CONTINUE)
+        wm.cancelUniqueWork(PERIODIC); wm.cancelUniqueWork(ON_CHANGE); wm.cancelUniqueWork(NOW); wm.cancelUniqueWork(CONTINUE); wm.cancelUniqueWork(SETTLE)
     }
 }
 
@@ -145,9 +162,11 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
             } catch (_: Exception) { /* not allowed from the background right now: carry on without it */ }
         }
 
+        val ignoreDelay = tags.contains(Scheduler.TAG_MANUAL)
         val outcome = try {
             runner.run(
                 budgetMs = budgetMs,
+                ignoreDelay = ignoreDelay,
                 onProgress = { done, total, name ->
                     if (fgStart != 0L) try { setForegroundAsync(Notifications.foreground(ctx, name, done, total)) } catch (_: Exception) {}
                 },
@@ -162,6 +181,13 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
             is SyncRunner.Outcome.Paused -> {
                 // Out of time with work left: keep going in a fresh run. If the OS stopped us, it reschedules.
                 if (outcome.deadlineHit) Scheduler.continueSoon(ctx)
+                Result.success()
+            }
+            is SyncRunner.Outcome.Done -> {
+                when {
+                    outcome.rescanFound -> Scheduler.continueSoon(ctx)
+                    outcome.nextSettleSecs != null -> Scheduler.scheduleAfterDelay(ctx, outcome.nextSettleSecs)
+                }
                 Result.success()
             }
             else -> Result.success()

@@ -46,7 +46,13 @@ class SyncRunner(private val context: Context) {
 
     sealed interface Outcome {
         data object NotPaired : Outcome
-        data class Done(val uploaded: Int) : Outcome
+        data class Done(
+            val uploaded: Int,
+            /** Earliest seconds until a newly-captured settling item becomes eligible, or null. */
+            val nextSettleSecs: Long? = null,
+            /** True if new/edited media finished writing while this pass was running. */
+            val rescanFound: Boolean = false,
+        ) : Outcome
         /** Ran out of time (or was stopped) with work left; progress is saved. */
         data class Paused(val deadlineHit: Boolean, val uploaded: Int) : Outcome
         /** Network trouble, rate limit or server hiccup; WorkManager should retry later. */
@@ -60,10 +66,16 @@ class SyncRunner(private val context: Context) {
     /** Encrypted size is the plaintext plus a 16-byte tag per 1 MiB chunk plus small headers. */
     private fun encryptedSize(size: Long) = size + (size / (1 shl 20) + 1) * 16 + 1024
 
-    private class Pass(var direct: Int = 0, var cloud: Int = 0, val waits: MutableMap<Wait, Int> = mutableMapOf())
+    private class Pass(
+        var direct: Int = 0,
+        var cloud: Int = 0,
+        var settling: Int = 0,
+        val waits: MutableMap<Wait, Int> = mutableMapOf(),
+    )
 
     fun run(
         budgetMs: Long = 8 * 60_000L,
+        ignoreDelay: Boolean = false,
         onProgress: (Int, Int, String) -> Unit = { _, _, _ -> },
         isStopped: () -> Boolean = { false },
     ): Outcome {
@@ -85,15 +97,37 @@ class SyncRunner(private val context: Context) {
         val pass = Pass()
         var notice: String? = if (access == MediaAccess.PARTIAL) "Cloudwind can only see the photos you chose to share. Allow all photos so new ones back up automatically." else null
 
+        // Pre-filter pending items: drop anything deleted during the grace window, and hold back
+        // newly-captured/edited items until the grace period expires (unless manual "Back up now").
+        val nowSecs = System.currentTimeMillis() / 1000
+        val delaySecs = settings.newPhotoDelaySecs.toLong()
+        val deletedIds = mutableListOf<Long>()
+        val settlingIds = HashSet<Long>()
+        var minSettleSecs: Long? = null
+        for (p in db.byState("pending", newestFirst = true)) {
+            if (!MediaScanner.exists(resolver, p)) {
+                dropStage(p)
+                deletedIds += p.mediaId
+                continue
+            }
+            val rem = SettleWindow.remainingSecs(p.dateModified, nowSecs, delaySecs, ignoreDelay)
+            if (rem > 0L) {
+                settlingIds += p.mediaId
+                pass.settling++
+                minSettleSecs = if (minSettleSecs == null) rem else minOf(minSettleSecs, rem)
+            }
+        }
+        if (deletedIds.isNotEmpty()) db.remove(deletedIds)
+
         // ---- 1. is the PC on this network? -------------------------------------------------
         var internet = Device.conditions(context, false).internet
-        var lan: LanClient? = if (Device.onLocalNetwork(context)) findPc(pairing, client, internet) else null
+        var lan: LanClient? = if (settings.directEnabled && Device.onLocalNetwork(context)) findPc(pairing, client, internet) else null
         settings.pcOnNetwork = lan != null
 
         // ---- 2. direct phase -----------------------------------------------------------------
         if (lan != null) {
             try {
-                directPhase(lan, client, pass, gates, onProgress, shouldStop)
+                directPhase(lan, client, pass, gates, settlingIds, onProgress, shouldStop)
             } catch (e: UploadInterrupted) {
                 return paused(isStopped, pass)
             } catch (e: SecurityException) {
@@ -108,15 +142,15 @@ class SyncRunner(private val context: Context) {
 
         // ---- 3. cloud phase --------------------------------------------------------------------
         internet = Device.conditions(context, false).internet
+        val pending = db.byState("pending", newestFirst = true).filter { it.mediaId !in settlingIds }
         var limits: Limits? = null
-        if (internet) {
+        if (internet && pending.isNotEmpty()) {
             limits = try { client.limits() } catch (e: HttpError) { return httpFailure(e) } catch (e: IOException) { null }
             limits?.let { settings.maxObjectBytes = it.max_object_bytes }
         }
         var free = limits?.free_bytes ?: Long.MAX_VALUE
         var inboxFull = false
 
-        val pending = db.byState("pending", newestFirst = true)
         for ((i, p) in pending.withIndex()) {
             if (shouldStop()) return paused(isStopped, pass)
             val cond = Device.conditions(context, lanReachable = lan != null)
@@ -136,7 +170,9 @@ class SyncRunner(private val context: Context) {
             onProgress(i, pending.size, p.name)
             try {
                 uploadOne(client, pairing.key, p, shouldStop)
-                db.markUploaded(p.mediaId, System.currentTimeMillis() / 1000)
+                val now = System.currentTimeMillis() / 1000
+                db.markUploaded(p.mediaId, now)
+                recordHistoryItem(p, route = "cloud", status = "cloud", transferredAt = now, verifiedAt = null)
                 pass.cloud++
                 free -= need
             } catch (e: UploadInterrupted) {
@@ -153,7 +189,7 @@ class SyncRunner(private val context: Context) {
             } catch (e: Crypto.SourceChangedException) {
                 db.setError(p.mediaId, "still being written")
             } catch (e: IOException) {
-                if (!MediaScanner.exists(resolver, p.mediaId, p.isVideo)) { dropStage(p); db.remove(listOf(p.mediaId)); continue }
+                if (!MediaScanner.exists(resolver, p)) { dropStage(p); db.remove(listOf(p.mediaId)); continue }
                 return fail(Outcome.Retry(e.message ?: "network error"))
             }
         }
@@ -169,7 +205,9 @@ class SyncRunner(private val context: Context) {
             }
         }
         finish(pass, inboxFull, notice)
-        return Outcome.Done(pass.direct + pass.cloud)
+        // Catch any photo whose camera HDR/IS_PENDING write finished while this pass was running.
+        val lateChanges = MediaScanner.scan(context, db, settings)
+        return Outcome.Done(pass.direct + pass.cloud, nextSettleSecs = minSettleSecs, rescanFound = lateChanges > 0)
     }
 
     // ============================== direct route ==============================
@@ -200,11 +238,21 @@ class SyncRunner(private val context: Context) {
             val (sha, n) = openOriginal(p).use { Crypto.hash(it) }
             db.setHash(p.mediaId, sha, n)
             sha to n
-        } catch (e: IOException) { null }
+        } catch (e: IOException) {
+            if (!MediaScanner.exists(context.contentResolver, p)) {
+                dropStage(p)
+                db.remove(listOf(p.mediaId))
+            }
+            null
+        }
     }
 
     private fun openOriginal(p: Photo): java.io.InputStream {
         val resolver = context.contentResolver
+        if (p.docUri != null) {
+            return resolver.openInputStream(Uri.parse(p.docUri))
+                ?: throw IOException("cannot open ${p.name}")
+        }
         val uri = MediaScanner.uriFor(p.mediaId, p.isVideo)
         val source: Uri = try { MediaStore.setRequireOriginal(uri) } catch (e: Exception) { uri }
         return (try { resolver.openInputStream(source) } catch (e: UnsupportedOperationException) { resolver.openInputStream(uri) })
@@ -213,9 +261,9 @@ class SyncRunner(private val context: Context) {
 
     private fun directPhase(
         lan: LanClient, client: WorkerClient, pass: Pass, gates: dev.cloudwind.core.Gates,
-        onProgress: (Int, Int, String) -> Unit, shouldStop: () -> Boolean,
+        settlingIds: Set<Long>, onProgress: (Int, Int, String) -> Unit, shouldStop: () -> Boolean,
     ) {
-        val rows = db.unsynced()
+        val rows = db.unsynced().filter { !(it.state == "pending" && it.mediaId in settlingIds) }
         if (rows.isEmpty()) return
 
         // A big cloud upload that is nearly done is finished by the cloud; a long one is cancelled and goes direct.
@@ -248,8 +296,10 @@ class SyncRunner(private val context: Context) {
             val plan = lan.plan(hashed.map { (id, t) -> LanPlanItem(id, t.second, t.third, t.first.objectId.takeIf { t.first.state == "uploaded" }) })
             for (id in plan.have) {
                 val (p, _, n) = hashed[id] ?: continue
+                val now = System.currentTimeMillis() / 1000
                 db.setSize(p.mediaId, n)
-                db.markSyncedDirect(p.mediaId, System.currentTimeMillis() / 1000) // the PC already had it: nothing sent
+                db.markSyncedDirect(p.mediaId, now) // the PC already had it: nothing sent
+                recordHistoryItem(p.copy(size = n), route = "direct", status = "pc", transferredAt = now, verifiedAt = now)
             }
             for (w in plan.want) {
                 if (shouldStop()) throw UploadInterrupted()
@@ -260,8 +310,10 @@ class SyncRunner(private val context: Context) {
                 }
                 onProgress(done++, candidates.size, p.name)
                 if (sendDirect(lan, p, sha, n, w.offset, shouldStop)) {
+                    val now = System.currentTimeMillis() / 1000
                     db.setSize(p.mediaId, n) // exactly what the PC verified, for the safe-to-delete check
-                    db.markSyncedDirect(p.mediaId, System.currentTimeMillis() / 1000)
+                    db.markSyncedDirect(p.mediaId, now)
+                    recordHistoryItem(p.copy(size = n), route = "direct", status = "pc", transferredAt = now, verifiedAt = now)
                     pass.direct++
                 }
             }
@@ -322,15 +374,22 @@ class SyncRunner(private val context: Context) {
         return o
     }
 
+    private fun recordHistoryItem(p: Photo, route: String, status: String, transferredAt: Long, verifiedAt: Long?) {
+        val thumb = ThumbCache.ensureThumbnail(context, p)
+        val dur = ThumbCache.queryDurationMs(context.contentResolver, p.mediaId, p.isVideo, p.docUri)
+        db.recordHistory(p, route = route, status = status, transferredAt = transferredAt, verifiedAt = verifiedAt, thumbFile = thumb, durationMs = dur)
+    }
+
     private fun finish(pass: Pass, inboxFull: Boolean, notice: String?) {
         settings.inboxFull = inboxFull
         settings.notice = notice
         settings.lastDirect = pass.direct
         settings.lastCloud = pass.cloud
-        settings.waiting = summarizeWaits(pass.waits)
-        settings.waitingCount = pass.waits.values.sum()
+        settings.waiting = summarizeWaits(pass.waits, pass.settling)
+        settings.waitingCount = pass.waits.values.sum() + pass.settling
         settings.lastError = null
         settings.lastRunAt = System.currentTimeMillis() / 1000
+        ThumbCache.prune(context, db)
     }
 
     private fun stagedFile(p: Photo) = File(stagingDir, "${p.objectId}.enc")
@@ -385,7 +444,13 @@ class SyncRunner(private val context: Context) {
         var cursor = since
         repeat(50) {
             val r = client.status(cursor)
-            r.objects.forEach { o -> if (o.state == "synced") db.markSynced(o.id, o.synced_at ?: (System.currentTimeMillis() / 1000)) }
+            r.objects.forEach { o ->
+                if (o.state == "synced") {
+                    val at = o.synced_at ?: (System.currentTimeMillis() / 1000)
+                    db.markSynced(o.id, at)
+                    db.markHistorySyncedByObjectId(o.id, at)
+                }
+            }
             lastInboxBytes = r.inbox_bytes
             if (r.objects.size < 1000) return
             cursor = r.objects.maxOf { it.uploaded_at }
@@ -402,15 +467,18 @@ class SyncRunner(private val context: Context) {
         @Volatile var lastInboxBytes: Long = 0
 
         /** e.g. "3 waiting for Wi-Fi · 2 waiting for your home network". Null when nothing is held back. */
-        fun summarizeWaits(waits: Map<Wait, Int>): String? {
-            if (waits.isEmpty()) return null
+        fun summarizeWaits(waits: Map<Wait, Int>, settling: Int = 0): String? {
+            if (waits.isEmpty() && settling <= 0) return null
             val label = mapOf(
                 Wait.WIFI to "waiting for Wi-Fi", Wait.BATTERY to "waiting for charge or battery",
                 Wait.HOME_NETWORK to "waiting for your home network", Wait.NETWORK to "waiting for a connection",
                 Wait.INBOX_FULL to "waiting for room in the cloud inbox",
             )
             val order = listOf(Wait.WIFI, Wait.BATTERY, Wait.HOME_NETWORK, Wait.NETWORK, Wait.INBOX_FULL)
-            return order.filter { (waits[it] ?: 0) > 0 }.joinToString(" · ") { "${waits[it]} ${label[it]}" }
+            val parts = mutableListOf<String>()
+            if (settling > 0) parts += "$settling waiting a moment (new)"
+            order.filter { (waits[it] ?: 0) > 0 }.forEach { parts += "${waits[it]} ${label[it]}" }
+            return parts.joinToString(" · ").ifEmpty { null }
         }
     }
 }

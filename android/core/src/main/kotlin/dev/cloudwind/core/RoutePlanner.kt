@@ -4,16 +4,15 @@ package dev.cloudwind.core
 enum class Policy { CLOUD_OK, HOME_ONLY }
 
 /**
- * Camera photos (`DCIM/…`) may use the cloud; everything else is Home-only unless the user flips that folder.
- * Folders are matched exactly, ignoring a trailing slash. An explicit choice always beats the default.
+ * Every folder defaults to cloud-OK (Home Wi-Fi Only = off) unless the user explicitly marks it Home-only.
+ * Folders are matched exactly, ignoring a trailing slash.
  */
 fun folderPolicy(relPath: String, homeOnly: Set<String>, cloudOk: Set<String>): Policy {
     val p = relPath.trim().trimEnd('/')
     return when {
         p in homeOnly -> Policy.HOME_ONLY
         p in cloudOk -> Policy.CLOUD_OK
-        p == "DCIM" || p.startsWith("DCIM/") -> Policy.CLOUD_OK
-        else -> Policy.HOME_ONLY
+        else -> Policy.CLOUD_OK
     }
 }
 

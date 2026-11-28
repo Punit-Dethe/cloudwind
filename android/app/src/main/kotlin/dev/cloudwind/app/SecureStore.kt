@@ -58,6 +58,9 @@ class SecureStore(context: Context) {
         p.lanPort?.let { put("lan_port", it.toString().toByteArray()) } ?: sp.edit().remove("lan_port").apply()
     }
 
+    /** Fast check (no Keystore RPC) for whether pairing credentials exist on disk. */
+    fun hasPairing(): Boolean = sp.contains("key") && sp.contains("url") && sp.contains("token")
+
     fun loadPairing(): Pairing? {
         val key = get("key") ?: return null
         val url = get("url")?.toString(Charsets.UTF_8) ?: return null

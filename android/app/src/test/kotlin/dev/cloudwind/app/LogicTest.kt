@@ -88,5 +88,93 @@ class LogicTest {
         assertEquals(null, SyncRunner.summarizeWaits(emptyMap()))
         val text = SyncRunner.summarizeWaits(mapOf(dev.cloudwind.core.Wait.WIFI to 4, dev.cloudwind.core.Wait.HOME_NETWORK to 3))!!
         assertEquals("4 waiting for Wi-Fi · 3 waiting for your home network", text)
+        assertEquals("2 waiting a moment (new)", SyncRunner.summarizeWaits(emptyMap(), settling = 2))
+        assertEquals(
+            "1 waiting a moment (new) · 3 waiting for Wi-Fi",
+            SyncRunner.summarizeWaits(mapOf(dev.cloudwind.core.Wait.WIFI to 3), settling = 1),
+        )
+    }
+
+    // ---- new-photo grace period (snap -> review -> quick delete / edit) ----
+    @Test fun settle_window_holds_brand_new_photos_then_releases_them() {
+        assertEquals(45L, SettleWindow.remainingSecs(dateModified = 1000, nowSecs = 1015, delaySecs = 60))
+        assertEquals(0L, SettleWindow.remainingSecs(dateModified = 1000, nowSecs = 1060, delaySecs = 60))
+        assertEquals(0L, SettleWindow.remainingSecs(dateModified = 1000, nowSecs = 1200, delaySecs = 60))
+    }
+
+    @Test fun settle_window_bypasses_delay_on_manual_backup_or_bad_timestamps() {
+        assertEquals(0L, SettleWindow.remainingSecs(dateModified = 1000, nowSecs = 1005, delaySecs = 60, ignoreDelay = true))
+        assertEquals(0L, SettleWindow.remainingSecs(dateModified = 1000, nowSecs = 1005, delaySecs = 0))
+        assertEquals(0L, SettleWindow.remainingSecs(dateModified = 0, nowSecs = 1005, delaySecs = 60))
+        assertEquals(0L, SettleWindow.remainingSecs(dateModified = 2000, nowSecs = 1005, delaySecs = 60))
+    }
+
+    // ---- proactive in-place edit detection ----
+    @Test fun edit_detector_distinguishes_edits_from_v3_backfill() {
+        // Legacy pre-v4 row (dateModified == 0) with identical size: backfill timestamp, do NOT re-upload.
+        assertEquals(ScanAction.KEEP, EditDetector.classify("synced", 5000, 0, 5000, 1700000000))
+        // Untouched v4 row: keep.
+        assertEquals(ScanAction.KEEP, EditDetector.classify("synced", 5000, 1000, 5000, 1000))
+        // Edited during grace window (still pending): refresh metadata & clear stale hash/stage.
+        assertEquals(ScanAction.REFRESH_PENDING, EditDetector.classify("pending", 5000, 1000, 5200, 1010))
+        assertEquals(ScanAction.REFRESH_PENDING, EditDetector.classify("pending", 5000, 1000, 5000, 1010))
+        // Edited in-place after already uploaded or synced: re-queue for backup!
+        assertEquals(ScanAction.REQUEUE_EDITED, EditDetector.classify("synced", 5000, 1000, 4800, 1020))
+        assertEquals(ScanAction.REQUEUE_EDITED, EditDetector.classify("uploaded", 5000, 1000, 5000, 1020))
+    }
+
+    // ---- per-folder selection, auto-discovery naming, and SAF paths ----
+    @Test fun folder_selection_supports_explicit_picks_and_legacy_defaults() {
+        val wa = "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Images/"
+        // Fresh default (not explicit, legacyAllFolders = false): DCIM only.
+        assertTrue(FolderSelection.isSelected("DCIM/Camera/", explicit = false, selected = emptySet(), legacyAllFolders = false))
+        assertFalse(FolderSelection.isSelected(wa, explicit = false, selected = emptySet(), legacyAllFolders = false))
+        // Explicit selection: only user-chosen folders (including WhatsApp, Canva, etc.).
+        val picked = setOf("DCIM/Camera", FolderSelection.norm(wa), "Pictures/Canva")
+        assertTrue(FolderSelection.isSelected("DCIM/Camera/", explicit = true, selected = picked, legacyAllFolders = false))
+        assertTrue(FolderSelection.isSelected(wa, explicit = true, selected = picked, legacyAllFolders = false))
+        assertTrue(FolderSelection.isSelected("Pictures/Canva/", explicit = true, selected = picked, legacyAllFolders = false))
+        assertFalse(FolderSelection.isSelected("Pictures/Screenshots/", explicit = true, selected = picked, legacyAllFolders = false))
+    }
+
+    @Test fun saf_tree_doc_ids_and_media_filters_behave_safely() {
+        assertEquals("Pictures/Canva", FolderSelection.relativePathFromTreeDocId("primary:Pictures/Canva"))
+        assertEquals(
+            "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Images",
+            FolderSelection.relativePathFromTreeDocId("primary:Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Images"),
+        )
+        assertEquals("Photos/Trips", FolderSelection.relativePathFromTreeDocId("1A2B-3C4D:Photos/Trips"))
+        assertEquals(null, FolderSelection.relativePathFromTreeDocId("primary:"))
+
+        // SAF IDs are strictly negative and deterministic so they never collide with MediaStore IDs.
+        val id1 = FolderSelection.safMediaId("content://com.android.externalstorage.documents/tree/primary%3ADoc/1")
+        val id2 = FolderSelection.safMediaId("content://com.android.externalstorage.documents/tree/primary%3ADoc/2")
+        assertTrue(id1 < 0L && id2 < 0L && id1 != id2)
+        assertEquals(id1, FolderSelection.safMediaId("content://com.android.externalstorage.documents/tree/primary%3ADoc/1"))
+
+        assertTrue(FolderSelection.isSupportedMedia("image/jpeg", "IMG_1.jpg"))
+        assertTrue(FolderSelection.isSupportedMedia("video/mp4", "VID_1.mp4"))
+        assertTrue(FolderSelection.isSupportedMedia(null, "design.png"))
+        assertFalse(FolderSelection.isSupportedMedia("application/octet-stream", ".nomedia"))
+        assertFalse(FolderSelection.isSupportedMedia("text/plain", "notes.txt"))
+    }
+
+    // ---- history day bucketing, video duration formatting, and rolling thumbnail cap ----
+    @Test fun history_logic_groups_days_and_prunes_oldest_thumbnails() {
+        val now = 1_795_800_000L // UTC midday reference
+        assertEquals("Today", HistoryLogic.dayGroup(now - 120, now, zoneOffsetSecs = 0))
+        assertEquals("Yesterday", HistoryLogic.dayGroup(now - 86_400L, now, zoneOffsetSecs = 0))
+        assertEquals("Earlier This Week", HistoryLogic.dayGroup(now - 3 * 86_400L, now, zoneOffsetSecs = 0))
+        assertEquals("Earlier", HistoryLogic.dayGroup(now - 12 * 86_400L, now, zoneOffsetSecs = 0))
+
+        assertEquals(null, HistoryLogic.formatDuration(0L))
+        assertEquals("0:24", HistoryLogic.formatDuration(24_000L))
+        assertEquals("2:05", HistoryLogic.formatDuration(125_000L))
+        assertEquals("1:04:12", HistoryLogic.formatDuration(3_852_000L))
+
+        val thumbs = (1..505).map { "obj_$it.webp" }
+        val dropped = HistoryLogic.thumbsToPrune(thumbs, maxKeep = 500)
+        assertEquals(listOf("obj_501.webp", "obj_502.webp", "obj_503.webp", "obj_504.webp", "obj_505.webp"), dropped)
+        assertEquals(emptyList<String>(), HistoryLogic.thumbsToPrune(thumbs.take(20), maxKeep = 500))
     }
 }

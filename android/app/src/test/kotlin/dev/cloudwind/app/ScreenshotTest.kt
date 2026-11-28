@@ -5,6 +5,7 @@ import app.cash.paparazzi.Paparazzi
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
+import dev.cloudwind.app.ui.AppTab
 import org.junit.Rule
 import org.junit.Test
 
@@ -12,17 +13,17 @@ import org.junit.Test
 class ScreenshotTest {
     @get:Rule
     val paparazzi = Paparazzi(
-        // A Pixel 5 screen, taller than the real one so the whole scrolling page is visible in one image.
-        deviceConfig = DeviceConfig.PIXEL_5.copy(screenHeight = 3300),
+        // Standard phone viewport so the floating pill tab bar anchors naturally at the bottom.
+        deviceConfig = DeviceConfig.PIXEL_5,
         theme = "android:Theme.Material.Light.NoActionBar",
     )
 
     private val server = "https://cloudwind.example.workers.dev"
     private val now = 1_795_800_000L
 
-    private fun home(ui: UiState, dark: Boolean = false) = paparazzi.snapshot {
+    private fun home(ui: UiState, dark: Boolean = false, tab: AppTab = AppTab.SYNC) = paparazzi.snapshot {
         CloudwindTheme(dark = dark, dynamic = false) {
-            Surface(Modifier.fillMaxSize()) { HomeScreen(ui.copy(nowSecs = now), HomeActions()) }
+            Surface(Modifier.fillMaxSize()) { HomeScreen(ui.copy(nowSecs = now), HomeActions(), initialTab = tab) }
         }
     }
 
@@ -97,8 +98,99 @@ class ScreenshotTest {
             counts = Counts(pending = 11, uploaded = 3, synced = 88, syncedBytes = 1_100_000_000L),
             waiting = "4 waiting for Wi-Fi · 2 waiting for charge or battery · 3 waiting for your home network",
             lastDirect = 0, lastCloud = 2, wifiOnly = true, batteryGate = true, batteryMin = 40,
-            folders = listOf(FolderRow("DCIM/Camera/", 90, false), FolderRow("Documents/Scans/", 3, true)),
+            folders = listOf(
+                FolderRow("DCIM/Camera/", 90, false, pending = 3, synced = 87, totalBytes = 1_700_000_000L),
+                FolderRow("Documents/Scans/", 3, true, pending = 3, totalBytes = 42_000_000L),
+            ),
             allFolders = true,
         ),
+    )
+
+    @Test
+    fun tab_folders() = home(
+        UiState(
+            paired = true, server = server, directAvailable = true, pcOnNetwork = true, batteryUnrestricted = true,
+            folders = listOf(
+                FolderRow("DCIM/Camera", 412, false, pending = 6, synced = 406, totalBytes = 8_400_000_000L, displayName = "Camera"),
+                FolderRow("Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Images", 184, true, synced = 184, totalBytes = 320_000_000L, displayName = "WhatsApp Images"),
+                FolderRow("Pictures/Canva", 24, true, totalBytes = 68_000_000L, displayName = "Canva"),
+            ),
+            availableFolders = listOf(
+                FolderRow("Pictures/Screenshots", 64, true, totalBytes = 160_000_000L, displayName = "Screenshots", selected = false),
+                FolderRow("Pictures/Telegram", 42, true, totalBytes = 95_000_000L, displayName = "Telegram", selected = false),
+                FolderRow("Download", 19, true, totalBytes = 140_000_000L, displayName = "Download", selected = false),
+            ),
+        ),
+        tab = AppTab.FOLDERS,
+    )
+
+    @Test
+    fun tab_history() = home(
+        UiState(
+            paired = true,
+            server = server,
+            counts = Counts(pending = 0, uploaded = 3, synced = 19),
+            history = buildList {
+                // Today (9 items, mix of photos, cloud badge, video duration, screenshot)
+                for (i in 0 until 9) {
+                    val vid = i == 2 || i == 7
+                    val shot = i == 5
+                    add(
+                        HistoryItem(
+                            id = 100L + i,
+                            mediaId = 1000L + i,
+                            docUri = null,
+                            objectId = "obj_t_$i",
+                            name = when {
+                                vid -> "VID_${1040 + i}.mp4"
+                                shot -> "Screenshot_$i.png"
+                                else -> "IMG_${4831 - i}.jpg"
+                            },
+                            relPath = if (shot) "Pictures/Screenshots/" else "DCIM/Camera/",
+                            size = if (vid) 48_000_000L else 3_800_000L,
+                            isVideo = vid,
+                            durationMs = if (vid) 24_000L + i * 7_000L else 0L,
+                            route = if (i == 1 || i == 6) "cloud" else "direct",
+                            status = if (i == 1 || i == 6) "cloud" else "pc",
+                            transferredAt = now - 600L - i * 1800L,
+                            verifiedAt = if (i == 1 || i == 6) null else now - 600L - i * 1800L,
+                        ),
+                    )
+                }
+                // Yesterday (8 items)
+                for (i in 0 until 8) {
+                    val vid = i == 4
+                    add(
+                        HistoryItem(
+                            id = 200L + i,
+                            mediaId = 2000L + i,
+                            docUri = null,
+                            objectId = "obj_y_$i",
+                            name = if (vid) "VID_${1020 + i}.mp4" else "IMG_${4810 - i}.jpg",
+                            relPath = "DCIM/Camera/",
+                            size = if (vid) 62_000_000L else 4_100_000L,
+                            isVideo = vid,
+                            durationMs = if (vid) 51_000L else 0L,
+                            route = "direct",
+                            status = if (i == 3) "cloud" else "pc",
+                            transferredAt = now - 86_400L - i * 2400L,
+                            verifiedAt = if (i == 3) null else now - 86_400L - i * 2400L,
+                        ),
+                    )
+                }
+            },
+        ),
+        tab = AppTab.HISTORY,
+    )
+
+    @Test
+    fun tab_rules_dark() = home(
+        UiState(
+            paired = true, server = server, directAvailable = true, pcOnNetwork = true, directEnabled = true,
+            batteryUnrestricted = true, bigMb = 100, batteryMin = 50,
+            newPhotoDelaySecs = 60, wifiOnly = true, batteryGate = true, allFolders = true,
+        ),
+        dark = true,
+        tab = AppTab.SETTINGS,
     )
 }
