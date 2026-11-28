@@ -103,6 +103,9 @@ pub struct Meta {
     pub sha256: String,
     /// Original modification time, seconds since the Unix epoch, if known.
     pub modified: Option<u64>,
+    /// Optional 1-level destination subfolder on the PC (e.g. "Camera", "WhatsApp").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
 }
 
 /// Hash a reader with SHA-256, returning lowercase hex and the byte count.
@@ -146,11 +149,24 @@ pub fn encrypt<R: Read, W: Write>(
     key: &LibraryKey,
     name: &str,
     modified: Option<u64>,
+    open: impl FnMut() -> io::Result<R>,
+    dst: W,
+) -> Result<Meta> {
+    encrypt_in_folder(key, name, None, modified, open, dst)
+}
+
+/// Like [`encrypt`], also recording an optional destination folder name inside the encrypted header.
+pub fn encrypt_in_folder<R: Read, W: Write>(
+    key: &LibraryKey,
+    name: &str,
+    folder: Option<&str>,
+    modified: Option<u64>,
     mut open: impl FnMut() -> io::Result<R>,
     dst: W,
 ) -> Result<Meta> {
     let (sha256, size) = hash_reader(open()?)?;
-    let meta = Meta { name: name.to_string(), size, sha256, modified };
+    let clean_folder = folder.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+    let meta = Meta { name: name.to_string(), size, sha256, modified, folder: clean_folder };
     encrypt_with_meta(key, &meta, open()?, dst, DEFAULT_CHUNK)?;
     Ok(meta)
 }
@@ -334,7 +350,7 @@ mod tests {
     fn roundtrip(data: &[u8], chunk: u32) -> Result<Vec<u8>> {
         let key = LibraryKey::generate();
         let (sha, size) = hash_reader(data)?;
-        let meta = Meta { name: "a.jpg".into(), size, sha256: sha, modified: Some(1) };
+        let meta = Meta { name: "a.jpg".into(), size, sha256: sha, modified: Some(1), folder: Some("Camera".into()) };
         let mut ct = Vec::new();
         encrypt_with_meta(&key, &meta, data, &mut ct, chunk)?;
         let mut out = Vec::new();
@@ -356,7 +372,7 @@ mod tests {
     #[test]
     fn wrong_key_fails() {
         let (k1, k2) = (LibraryKey::generate(), LibraryKey::generate());
-        let meta = Meta { name: "x".into(), size: 3, sha256: hash_reader(&b"abc"[..]).unwrap().0, modified: None };
+        let meta = Meta { name: "x".into(), size: 3, sha256: hash_reader(&b"abc"[..]).unwrap().0, modified: None, folder: None };
         let mut ct = Vec::new();
         encrypt_with_meta(&k1, &meta, &b"abc"[..], &mut ct, 64).unwrap();
         assert!(matches!(decrypt(&k2, &ct[..], io::sink()), Err(Error::Crypto)));
@@ -366,7 +382,7 @@ mod tests {
     fn tampering_and_truncation_detected() {
         let key = LibraryKey::generate();
         let data = vec![7u8; 500];
-        let meta = Meta { name: "x".into(), size: 500, sha256: hash_reader(&data[..]).unwrap().0, modified: None };
+        let meta = Meta { name: "x".into(), size: 500, sha256: hash_reader(&data[..]).unwrap().0, modified: None, folder: None };
         let mut ct = Vec::new();
         encrypt_with_meta(&key, &meta, &data[..], &mut ct, 64).unwrap();
         let mut bad = ct.clone();
@@ -386,12 +402,19 @@ mod tests {
     }
 
     #[test]
-    fn hides_file_name() {
+    fn hides_file_name_and_folder() {
         let key = LibraryKey::generate();
-        let meta = Meta { name: "secret-name.jpg".into(), size: 1, sha256: hash_reader(&b"x"[..]).unwrap().0, modified: None };
+        let meta = Meta {
+            name: "secret-name.jpg".into(),
+            size: 1,
+            sha256: hash_reader(&b"x"[..]).unwrap().0,
+            modified: None,
+            folder: Some("PrivateAlbum".into()),
+        };
         let mut ct = Vec::new();
         encrypt_with_meta(&key, &meta, &b"x"[..], &mut ct, 64).unwrap();
         assert!(!ct.windows(6).any(|w| w == b"secret"));
+        assert!(!ct.windows(7).any(|w| w == b"Private"));
     }
 }
 

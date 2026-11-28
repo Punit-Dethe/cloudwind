@@ -97,10 +97,12 @@ class LanClient(
      */
     fun send(
         sha256: String, size: Long, offset: Long, name: String, modified: Long?, objectId: String?,
-        open: () -> InputStream, shouldStop: () -> Boolean = { false },
+        open: () -> InputStream, shouldStop: () -> Boolean = { false }, folder: String? = null,
     ): LanSend {
+        val cleanFolder = folder?.trim()?.ifEmpty { null }
         val q = buildString {
             append("?size=$size&offset=$offset&name=${URLEncoder.encode(name, "UTF-8")}")
+            if (cleanFolder != null) append("&folder=${URLEncoder.encode(cleanFolder, "UTF-8")}")
             if (modified != null) append("&modified=$modified")
             if (objectId != null) append("&object=${URLEncoder.encode(objectId, "UTF-8")}")
         }

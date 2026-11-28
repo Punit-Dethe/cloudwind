@@ -261,6 +261,7 @@ impl Lan {
         size: u64,
         offset: u64,
         name: &str,
+        folder: Option<&str>,
         modified: Option<u64>,
         object: Option<&str>,
         body: &mut dyn Read,
@@ -310,12 +311,17 @@ impl Lan {
             return Ok(Received::BadHash);
         }
         let lib = self.runtime.as_ref().map(|r| r.library_path()).unwrap_or_else(|| self.library.clone());
-        let stored = sync::place(&lib, &self.state, &part, name, modified, sha256)?;
+        let organize = self.runtime.as_ref().map(|r| r.organize_by_folder()).unwrap_or(true);
+        let stored = sync::place(&lib, &self.state, &part, name, folder, organize, modified, sha256)?;
         match &stored {
             Some(p) => {
                 println!("received {} (direct)", p.display());
                 if let Some(rt) = &self.runtime {
-                    let label = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| name.to_string());
+                    let label = p
+                        .strip_prefix(&lib)
+                        .ok()
+                        .map(|rel| rel.to_string_lossy().replace('\\', "/"))
+                        .unwrap_or_else(|| p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| name.to_string()));
                     rt.record_direct(&label, false);
                 }
             }
@@ -380,8 +386,9 @@ impl Lan {
             return (400, r#"{"error":"size_and_offset_required"}"#.into());
         };
         let name = get("name").unwrap_or("file");
+        let folder = get("folder");
         let modified = get("modified").and_then(|v| v.parse().ok());
-        match self.receive(sha, size, offset, name, modified, get("object"), req.as_reader()) {
+        match self.receive(sha, size, offset, name, folder, modified, get("object"), req.as_reader()) {
             Ok(Received::Progress { have }) => (202, format!(r#"{{"have":{have}}}"#)),
             Ok(Received::Stored { path }) => (200, format!(r#"{{"stored":{}}}"#, path.is_some())),
             Ok(Received::Conflict { have }) => (409, format!(r#"{{"error":"offset_mismatch","have":{have}}}"#)),
@@ -489,7 +496,7 @@ mod tests {
     fn plan_separates_have_cloud_and_want() {
         let e = env();
         let (a, b, c) = (b"already here".to_vec(), b"in the cloud".to_vec(), b"only on the phone".to_vec());
-        e.lan.receive(&sha(&a), a.len() as u64, 0, "a.jpg", None, None, &mut Cursor::new(&a)).unwrap();
+        e.lan.receive(&sha(&a), a.len() as u64, 0, "a.jpg", None, None, None, &mut Cursor::new(&a)).unwrap();
         e.cloud.pending.lock().unwrap().insert("obj-b".into());
 
         let items = vec![
@@ -509,10 +516,10 @@ mod tests {
     fn receives_verifies_places_and_releases_the_cloud_copy() {
         let e = env();
         let data: Vec<u8> = (0..500_000u32).map(|i| (i % 253) as u8).collect();
-        let r = e.lan.receive(&sha(&data), data.len() as u64, 0, "IMG_1.jpg", Some(1_700_000_000), Some("obj-1"), &mut Cursor::new(&data)).unwrap();
+        let r = e.lan.receive(&sha(&data), data.len() as u64, 0, "IMG_1.jpg", Some("WhatsApp"), Some(1_700_000_000), Some("obj-1"), &mut Cursor::new(&data)).unwrap();
         let Received::Stored { path: Some(p) } = r else { panic!("{r:?}") };
         assert_eq!(fs::read(&p).unwrap(), data);
-        assert_eq!(p.parent().unwrap(), e.lib);
+        assert_eq!(p.parent().unwrap(), e.lib.join("WhatsApp"));
         assert_eq!(*e.cloud.synced.lock().unwrap(), vec!["obj-1"]);
     }
 
@@ -522,16 +529,16 @@ mod tests {
         let data: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
         let s = sha(&data);
         // Phone sends 100k then the connection dies (body ends early).
-        let r = e.lan.receive(&s, 300_000, 0, "v.mp4", None, None, &mut Cursor::new(&data[..100_000])).unwrap();
+        let r = e.lan.receive(&s, 300_000, 0, "v.mp4", None, None, None, &mut Cursor::new(&data[..100_000])).unwrap();
         assert_eq!(r, Received::Progress { have: 100_000 });
         // The plan now tells the phone where to continue.
         let plan = e.lan.plan(&[PlanItem { id: "9".into(), sha256: s.clone(), size: 300_000, object_id: None }]);
         assert_eq!(plan.want, vec![Want { id: "9".into(), offset: 100_000 }]);
         // A wrong offset is refused with the truth.
-        let r = e.lan.receive(&s, 300_000, 50_000, "v.mp4", None, None, &mut Cursor::new(&data[50_000..])).unwrap();
+        let r = e.lan.receive(&s, 300_000, 50_000, "v.mp4", None, None, None, &mut Cursor::new(&data[50_000..])).unwrap();
         assert_eq!(r, Received::Conflict { have: 100_000 });
         // Resuming at the right offset completes and verifies the whole file.
-        let r = e.lan.receive(&s, 300_000, 100_000, "v.mp4", None, None, &mut Cursor::new(&data[100_000..])).unwrap();
+        let r = e.lan.receive(&s, 300_000, 100_000, "v.mp4", None, None, None, &mut Cursor::new(&data[100_000..])).unwrap();
         let Received::Stored { path: Some(p) } = r else { panic!("{r:?}") };
         assert_eq!(fs::read(p).unwrap(), data);
     }
@@ -542,7 +549,7 @@ mod tests {
         let good = b"the real photo".to_vec();
         let mut bad = good.clone();
         bad[3] ^= 1;
-        let r = e.lan.receive(&sha(&good), good.len() as u64, 0, "x.jpg", None, None, &mut Cursor::new(&bad)).unwrap();
+        let r = e.lan.receive(&sha(&good), good.len() as u64, 0, "x.jpg", None, None, None, &mut Cursor::new(&bad)).unwrap();
         assert_eq!(r, Received::BadHash);
         assert!(fs::read_dir(&e.lib).unwrap().next().is_none());
         assert_eq!(e.lan.part_len(&sha(&good)), 0, "bad partial removed");
@@ -553,8 +560,8 @@ mod tests {
         let e = env();
         let d = b"duplicate me".to_vec();
         let s = sha(&d);
-        e.lan.receive(&s, d.len() as u64, 0, "a.jpg", None, None, &mut Cursor::new(&d)).unwrap();
-        let r = e.lan.receive(&s, d.len() as u64, 0, "b.jpg", None, Some("obj-x"), &mut Cursor::new(&d)).unwrap();
+        e.lan.receive(&s, d.len() as u64, 0, "a.jpg", None, None, None, &mut Cursor::new(&d)).unwrap();
+        let r = e.lan.receive(&s, d.len() as u64, 0, "b.jpg", None, None, Some("obj-x"), &mut Cursor::new(&d)).unwrap();
         assert_eq!(r, Received::Stored { path: None });
         assert_eq!(fs::read_dir(&e.lib).unwrap().count(), 1);
         assert_eq!(*e.cloud.synced.lock().unwrap(), vec!["obj-x"]);
@@ -570,14 +577,14 @@ mod tests {
         // A transfer starts and then goes silent (the phone lost Wi-Fi without closing the connection).
         let stalled = e.lan.acquire(&s).unwrap();
         assert_eq!(
-            e.lan.receive(&s, 20_000, 0, "v.mp4", None, None, &mut Cursor::new(&data)).unwrap(),
+            e.lan.receive(&s, 20_000, 0, "v.mp4", None, None, None, &mut Cursor::new(&data)).unwrap(),
             Received::Busy,
             "a live transfer is not interrupted"
         );
         std::thread::sleep(Duration::from_millis(80));
 
         // The retry takes over and completes.
-        let r = e.lan.receive(&s, 20_000, 0, "v.mp4", None, None, &mut Cursor::new(&data)).unwrap();
+        let r = e.lan.receive(&s, 20_000, 0, "v.mp4", None, None, None, &mut Cursor::new(&data)).unwrap();
         assert!(matches!(r, Received::Stored { path: Some(_) }), "{r:?}");
 
         // If the stalled thread wakes up later, it is not allowed to write.
@@ -588,7 +595,7 @@ mod tests {
     #[test]
     fn empty_file_works() {
         let e = env();
-        let r = e.lan.receive(&sha(b""), 0, 0, "empty.txt", None, None, &mut Cursor::new(Vec::<u8>::new())).unwrap();
+        let r = e.lan.receive(&sha(b""), 0, 0, "empty.txt", None, None, None, &mut Cursor::new(Vec::<u8>::new())).unwrap();
         assert!(matches!(r, Received::Stored { path: Some(_) }));
     }
 

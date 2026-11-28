@@ -327,9 +327,10 @@ class SyncRunner(private val context: Context) {
     private fun sendDirect(lan: LanClient, p: Photo, sha: String, size: Long, startOffset: Long, shouldStop: () -> Boolean): Boolean {
         var offset = startOffset
         var last: IOException? = null
+        val destFolder = settings.pcFolderFor(p.relPath)
         repeat(3) { attempt ->
             try {
-                when (val r = lan.send(sha, size, offset, p.name, null, p.objectId.takeIf { p.state == "uploaded" }, { openOriginal(p) }, shouldStop)) {
+                when (val r = lan.send(sha, size, offset, p.name, null, p.objectId.takeIf { p.state == "uploaded" }, { openOriginal(p) }, shouldStop, folder = destFolder)) {
                     is LanSend.Stored -> return true
                     is LanSend.Conflict -> offset = r.have
                     is LanSend.Progress -> offset = r.have
@@ -428,8 +429,11 @@ class SyncRunner(private val context: Context) {
     /** Encrypt to a temp name, then rename, so a half-written file is never mistaken for a staged one. */
     private fun stage(key: ByteArray, p: Photo, dest: File) {
         val tmp = File(stagingDir, "${p.objectId}.tmp")
+        val destFolder = settings.pcFolderFor(p.relPath)
         try {
-            val meta = tmp.outputStream().buffered().use { out -> Crypto.encrypt(key, p.name, null, { openOriginal(p) }, out) }
+            val meta = tmp.outputStream().buffered().use { out ->
+                Crypto.encrypt(key, p.name, null, { openOriginal(p) }, out, folder = destFolder)
+            }
             if (!tmp.renameTo(dest)) throw IOException("could not stage ${p.name}")
             db.setStage(p.mediaId, dest.length())
             db.setSize(p.mediaId, meta.size) // exactly what was backed up, for the safe-to-delete check

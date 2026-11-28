@@ -81,6 +81,7 @@ pub struct StatusSnapshot {
 pub struct SettingsSnapshot {
     pub start_on_login: bool,
     pub sync_interval_secs: u64,
+    pub organize_by_folder: bool,
     pub library: String,
     pub lan_port: u16,
     pub ui_port: u16,
@@ -95,6 +96,7 @@ pub struct SettingsSnapshot {
 pub struct SettingsPatch {
     pub start_on_login: Option<bool>,
     pub sync_interval_secs: Option<u64>,
+    pub organize_by_folder: Option<bool>,
     pub library: Option<String>,
     pub ui_port: Option<u16>,
 }
@@ -121,6 +123,7 @@ pub struct Runtime {
     pub pairing_code: Option<String>,
     pub ui_url: String,
     interval_secs: AtomicU64,
+    organize_by_folder: AtomicBool,
     live: Mutex<Live>,
     tray_thread_id: AtomicU32,
     tray_autostart_dirty: AtomicBool,
@@ -140,6 +143,7 @@ impl Runtime {
         lan_port: u16,
         ui_port: u16,
         interval_secs: u64,
+        organize_by_folder: bool,
         cert_fingerprint: String,
         worker_url: Option<String>,
         pairing_code: Option<String>,
@@ -154,6 +158,7 @@ impl Runtime {
             pairing_code,
             ui_url,
             interval_secs: AtomicU64::new(interval_secs.clamp(10, 3600)),
+            organize_by_folder: AtomicBool::new(organize_by_folder),
             live: Mutex::new(Live {
                 syncing: false,
                 last_check_at: None,
@@ -206,6 +211,10 @@ impl Runtime {
 
     pub fn interval_secs(&self) -> u64 {
         self.interval_secs.load(Ordering::Relaxed)
+    }
+
+    pub fn organize_by_folder(&self) -> bool {
+        self.organize_by_folder.load(Ordering::Relaxed)
     }
 
     pub fn set_syncing(&self, syncing: bool) {
@@ -289,6 +298,7 @@ impl Runtime {
         SettingsSnapshot {
             start_on_login: crate::autostart::is_enabled(),
             sync_interval_secs: self.interval_secs(),
+            organize_by_folder: self.organize_by_folder(),
             library: g.library.display().to_string(),
             lan_port: self.lan_port,
             ui_port: g.ui_port,
@@ -316,6 +326,7 @@ impl Runtime {
         let mut new_interval: Option<u64> = None;
         let mut new_library: Option<PathBuf> = None;
         let mut new_ui_port: Option<u16> = None;
+        let mut new_organize: Option<bool> = None;
 
         if let Some(secs) = patch.sync_interval_secs {
             if !(10..=3600).contains(&secs) {
@@ -323,6 +334,12 @@ impl Runtime {
             }
             self.interval_secs.store(secs, Ordering::Relaxed);
             new_interval = Some(secs);
+            persist_cfg = true;
+        }
+
+        if let Some(org) = patch.organize_by_folder {
+            self.organize_by_folder.store(org, Ordering::Relaxed);
+            new_organize = Some(org);
             persist_cfg = true;
         }
 
@@ -347,7 +364,7 @@ impl Runtime {
 
         if persist_cfg {
             if let Some(cfg_path) = &self.config_path {
-                crate::update_config_file(cfg_path, new_library.as_deref(), new_interval, new_ui_port)?;
+                crate::update_config_file(cfg_path, new_library.as_deref(), new_interval, new_ui_port, new_organize)?;
             }
             let mut g = self.live.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(p) = new_library {

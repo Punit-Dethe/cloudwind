@@ -133,6 +133,35 @@ class Settings(context: Context) {
         sp.edit().putStringSet("saf_folders", encoded).apply()
     }
 
+    // ---- custom PC destination subfolder per phone folder (e.g. WhatsApp Images + Video -> "WhatsApp") ----
+    fun pcFolders(): Map<String, String> =
+        folderSet("pc_folders").mapNotNull { entry ->
+            val idx = entry.indexOf('|')
+            if (idx <= 0 || idx >= entry.lastIndex) null
+            else FolderSelection.norm(entry.substring(0, idx)) to entry.substring(idx + 1)
+        }.toMap()
+
+    fun pcFolderFor(relPath: String, displayName: String? = null): String {
+        val n = FolderSelection.norm(relPath)
+        val custom = pcFolders()[n]?.let { FolderSelection.sanitizePcFolder(it) }.orEmpty()
+        return custom.ifEmpty { FolderSelection.defaultPcFolder(n, displayName) }
+    }
+
+    fun setPcFolder(relPath: String, targetFolder: String?) {
+        val n = FolderSelection.norm(relPath)
+        if (n.isEmpty()) return
+        val clean = targetFolder?.let { FolderSelection.sanitizePcFolder(it) }.orEmpty()
+        val def = FolderSelection.defaultPcFolder(n)
+        val map = pcFolders().toMutableMap()
+        if (clean.isEmpty() || clean == def) {
+            map.remove(n)
+        } else {
+            map[n] = clean
+        }
+        val encoded = map.entries.map { (k, v) -> "$k|$v" }.toSet()
+        sp.edit().putStringSet("pc_folders", encoded).apply()
+    }
+
     // ---- incremental scanning: MediaStore's per-volume change counter ----
     /** Last MediaStore generation scanned on a volume, valid only for the same MediaStore version. */
     fun scanGeneration(volume: String, version: String): Long =

@@ -75,6 +75,48 @@ object FolderSelection {
         return if (positive == 0L) -1L else -positive
     }
 
+    /** Clean 1-level PC destination subfolder name for a phone folder (works cleanly across LibrePhotos, Immich, PhotoPrism). */
+    fun defaultPcFolder(relPath: String, bucketName: String? = null): String {
+        val n = norm(relPath)
+        return when {
+            n.equals("DCIM", ignoreCase = true) || n.equals("DCIM/Camera", ignoreCase = true) -> "Camera"
+            n.equals("Download", ignoreCase = true) -> "Downloads"
+            else -> sanitizePcFolder(displayName(n, bucketName)).ifEmpty { "Photos" }
+        }
+    }
+
+    /** Sanitizes a user-typed PC destination folder name into a single safe 1-level folder name. */
+    fun sanitizePcFolder(raw: String): String {
+        val cleaned = raw
+            .replace(Regex("[/\\\\:*?\"<>|\\p{Cntrl}]"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .trimStart('.')
+            .trimEnd('.', ' ')
+            .trim()
+        return cleaned.take(60).trimEnd('.', ' ')
+    }
+
+    /**
+     * Quick-pick PC folder suggestions for a folder sheet:
+     * - Smart group name when obvious (e.g. "WhatsApp Images" / "WhatsApp Video" -> "WhatsApp")
+     * - The folder's own default name
+     * - Existing destination folder names already in use by other selected folders (so grouping takes 1 tap)
+     */
+    fun suggestedPcFolders(
+        relPath: String,
+        displayName: String,
+        existingTargets: Collection<String>,
+    ): List<String> {
+        val out = LinkedHashSet<String>()
+        val def = defaultPcFolder(relPath, displayName)
+        if (def.startsWith("WhatsApp ", ignoreCase = true)) out += "WhatsApp"
+        if (def.startsWith("Telegram ", ignoreCase = true)) out += "Telegram"
+        out += def
+        existingTargets.map { sanitizePcFolder(it) }.filter { it.isNotEmpty() }.forEach { out += it }
+        return out.toList()
+    }
+
     /** True if a SAF file MIME type or extension is a photo or video worth backing up. */
     fun isSupportedMedia(mime: String?, name: String): Boolean {
         if (name.startsWith(".")) return false

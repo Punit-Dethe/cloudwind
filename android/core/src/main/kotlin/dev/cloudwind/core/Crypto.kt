@@ -121,9 +121,11 @@ object Crypto {
         out: OutputStream,
         chunk: Int = DEFAULT_CHUNK,
         random: java.security.SecureRandom = java.security.SecureRandom(),
+        folder: String? = null,
     ): Meta {
         val (sha, size) = open().use { hash(it) }
-        val meta = Meta(name, size, sha, modified)
+        val cleanFolder = folder?.trim()?.ifEmpty { null }
+        val meta = Meta(name, size, sha, modified, cleanFolder)
         // A file still being written (e.g. a video) can change between the two passes. The PC would
         // reject the mismatch forever, so hash what we actually encrypt and refuse to ship a bad file.
         val md = MessageDigest.getInstance("SHA-256")

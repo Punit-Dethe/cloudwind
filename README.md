@@ -15,6 +15,17 @@ Your photo app (Immich, LibrePhotos, PhotoPrism, Nextcloud, or plain File Explor
   <img src="docs/screenshots/settings-dark.png" width="195" alt="Settings tab in OLED Dark Mode: Direct to PC, Start Delay, Cloud Uploads, and Home PC">
 </p>
 
+<p>
+  <img src="docs/screenshots/desktop-overview-dark.png" width="796" alt="PC desktop dashboard Overview in OLED Dark Mode: split-shell sidebar, precision ring, Cloud Inbox, Home Network, and live Recent Activity">
+</p>
+
+<details>
+  <summary>PC Dashboard — Settings &amp; Subfolder Layout Preview</summary>
+  <p>
+    <img src="docs/screenshots/desktop-settings-dark.png" width="796" alt="PC desktop dashboard Settings in OLED Dark Mode: Start with Windows, Check Interval, Photo Library, Organize into Subfolders, and live Library Layout Preview">
+  </p>
+</details>
+
 ## Why Cloudwind
 
 - **Your photos end up on your PC, not in someone else's cloud.** The cloud is only a waiting room. It empties itself
@@ -120,7 +131,7 @@ That's it. Take a photo: within about a minute it should be in your photo folder
 | **Back up now** | Starts a pass right away instead of waiting. Cloudwind also runs automatically whenever new photos finish saving and every 15 minutes as a safety net. |
 | **Back up older photos** | By default only photos taken after pairing are backed up. This adds your existing library, newest first. |
 | **Free up space** | Moves photos your PC has verified to the phone's trash (restorable for about 30 days). Android asks you once. Photos you edited after backup are never included. |
-| **Folders** | Automatically discovers Camera, WhatsApp, Telegram, Canva, Screenshots, Downloads, and more, plus **+ Add Folder** for any custom folder. Each folder can optionally be marked **Home Wi-Fi Only** so it never touches the cloud. |
+| **Folders** | Automatically discovers Camera, WhatsApp, Telegram, Canva, Screenshots, Downloads, and more, plus **+ Add Folder** for any custom folder. Each folder can be mapped to a clean 1-level **PC Folder** (e.g. grouping WhatsApp Images &amp; Video into `WhatsApp\`) and optionally marked **Home Wi-Fi Only**. |
 | **History** | 4-column photo grid of backed-up items with compact cached WebP previews (capped at 500 items) that stay viewable even after freeing local phone storage, plus single-item **Remove from Phone**. |
 | **Start Delay** | Optional grace period (Off to 10 min, default 1 min) before uploading brand-new shots so quick deletes or edits aren't uploaded twice. |
 | **Large Files** | Size above which a file counts as "large" (default 50 MB). Small photos and home-network transfers always go right away. |

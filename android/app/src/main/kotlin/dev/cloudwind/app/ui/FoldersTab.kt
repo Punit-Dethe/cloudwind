@@ -131,14 +131,25 @@ private fun FolderListRow(
                 modifier = Modifier.size(44.dp),
                 cornerRadius = 8.dp,
             )
-            Text(
-                text = folder.displayName,
-                fontSize = 17.sp,
-                fontWeight = FontWeight.Normal,
-                color = if (folder.selected) col.ink1 else col.ink2,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = folder.displayName,
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.Normal,
+                    color = if (folder.selected) col.ink1 else col.ink2,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (folder.selected && !folder.pcFolder.equals(folder.displayName, ignoreCase = true)) {
+                    Text(
+                        text = "PC / ${folder.pcFolder}",
+                        fontSize = 12.5.sp,
+                        color = col.ink2,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
         }
         Spacer(Modifier.width(10.dp))
         Row(

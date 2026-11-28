@@ -30,6 +30,7 @@ data class FolderRow(
     val displayName: String = FolderSelection.displayName(path),
     val selected: Boolean = true,
     val isSaf: Boolean = false,
+    val pcFolder: String = FolderSelection.defaultPcFolder(path, displayName),
 )
 
 data class UiState(
@@ -162,6 +163,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 val found = discoveredByPath[normPath]
                 val st = dbByPath[normPath]
                 val sel = settings.isFolderSelected(normPath)
+                val displayName = found?.displayName ?: FolderSelection.displayName(normPath)
                 FolderRow(
                     path = normPath,
                     count = maxOf(found?.itemCount ?: 0, st?.total ?: 0),
@@ -170,9 +172,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     uploaded = st?.uploaded ?: 0,
                     synced = st?.synced ?: 0,
                     totalBytes = maxOf(found?.totalBytes ?: 0L, st?.totalBytes ?: 0L),
-                    displayName = found?.displayName ?: FolderSelection.displayName(normPath),
+                    displayName = displayName,
                     selected = sel,
                     isSaf = found?.isSaf ?: (normPath in settings.safFolders()),
+                    pcFolder = settings.pcFolderFor(normPath, displayName),
                 )
             }
             val selectedRows = allRows.filter { it.selected }
@@ -293,6 +296,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun setBigMb(v: Int) { settings.bigMb = v; refresh() }
     fun setNewPhotoDelaySecs(v: Int) { settings.newPhotoDelaySecs = v; refresh() }
     fun setFolderHomeOnly(path: String, homeOnly: Boolean) { settings.setFolderHomeOnly(path, homeOnly); refresh() }
+    fun setFolderPcDest(path: String, destFolder: String?) { settings.setPcFolder(path, destFolder); refresh() }
     fun setAllFolders(v: Boolean) { settings.allFolders = v; Scheduler.backUpNow(getApplication()); refresh() }
 
     /** Seed explicit selection from currently active folders on first edit so nothing already active is dropped. */

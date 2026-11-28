@@ -10,6 +10,7 @@ data class Meta(
     val size: Long,
     val sha256: String,
     val modified: Long? = null,
+    val folder: String? = null,
 ) {
     companion object {
         // explicitNulls = true so `modified: null` is written, exactly like serde does.

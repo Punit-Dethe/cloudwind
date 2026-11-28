@@ -1,7 +1,16 @@
 package dev.cloudwind.app.ui
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,10 +24,13 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -29,10 +41,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.cloudwind.app.FolderRow
@@ -124,10 +138,12 @@ fun CloudwindSheetHost(
                     },
                 )
                 is ActiveSheet.FolderDetail -> {
-                    val folder = (ui.folders + ui.availableFolders).firstOrNull { it.path == sheet.folderPath }
+                    val allFolders = ui.folders + ui.availableFolders
+                    val folder = allFolders.firstOrNull { it.path == sheet.folderPath }
                     if (folder != null) {
                         FolderDetailSheetContent(
                             folder = folder,
+                            existingPcFolders = allFolders.filter { it.selected }.map { it.pcFolder },
                             thumbDirPath = ui.thumbDirPath,
                             thumbFile = ui.folderThumbs[folder.path],
                             onToggleBackup = { enabled ->
@@ -145,6 +161,12 @@ fun CloudwindSheetHost(
                                     if (homeOnly) "${folder.displayName}: Home Wi-Fi only"
                                     else "${folder.displayName}: Cloud + Home",
                                 )
+                            },
+                            onSetPcFolder = { dest ->
+                                a.folderPcDest(folder.path, dest)
+                                val label = dest?.let { FolderSelection.sanitizePcFolder(it) }.orEmpty()
+                                    .ifEmpty { FolderSelection.defaultPcFolder(folder.path, folder.displayName) }
+                                onToast("${folder.displayName} → PC / $label")
                             },
                             onDismiss = onDismiss,
                         )
@@ -451,13 +473,27 @@ private fun HomePcSheetContent(
 @Composable
 private fun FolderDetailSheetContent(
     folder: FolderRow,
+    existingPcFolders: List<String>,
     thumbDirPath: String,
     thumbFile: String?,
     onToggleBackup: (Boolean) -> Unit,
     onToggleHomeOnly: (Boolean) -> Unit,
+    onSetPcFolder: (String?) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val col = CwTheme.colors
+    var showHomeInfo by remember { mutableStateOf(false) }
+    var pcFolderExpanded by remember { mutableStateOf(false) }
+    var customInput by remember(folder.path, folder.pcFolder) { mutableStateOf(folder.pcFolder) }
+
+    val springExpand = expandVertically(spring<IntSize>(dampingRatio = 0.82f, stiffness = 360f)) + fadeIn(spring(stiffness = 380f))
+    val springCollapse = shrinkVertically(spring<IntSize>(dampingRatio = 0.88f, stiffness = 420f)) + fadeOut(spring(stiffness = 440f))
+    val chevRot by animateFloatAsState(if (pcFolderExpanded) 90f else 0f, CwMotion.SpringFloat, label = "pcFolderChev")
+
+    val suggestions = remember(folder.path, folder.displayName, existingPcFolders) {
+        FolderSelection.suggestedPcFolders(folder.path, folder.displayName, existingPcFolders)
+    }
+
     val parent = FolderSelection.subtitlePath(folder.path)
     val sub = buildString {
         if (parent.isNotEmpty()) append("$parent · ")
@@ -479,35 +515,173 @@ private fun FolderDetailSheetContent(
         },
     )
 
-    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-        InsetCard(containerColor = col.sheetSurface) {
+    InsetCard(containerColor = col.sheetSurface) {
+        // 1. Back Up
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(54.dp)
+                .clickable { onToggleBackup(!folder.selected) }
+                .padding(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Back Up", fontSize = 16.5.sp, color = col.ink1)
+            AppleSwitch(checked = folder.selected, onCheckedChange = onToggleBackup)
+        }
+
+        Hairline()
+
+        // 2. Home Wi-Fi Only (with inline ⓘ info toggle instead of external footnote)
+        Column(Modifier.fillMaxWidth()) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(52.dp)
-                    .clickable { onToggleBackup(!folder.selected) }
-                    .padding(horizontal = 16.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text("Back Up", fontSize = 16.5.sp, color = col.ink1)
-                AppleSwitch(checked = folder.selected, onCheckedChange = onToggleBackup)
-            }
-            Hairline()
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(52.dp)
+                    .height(54.dp)
                     .clickable { onToggleHomeOnly(!folder.homeOnly) }
                     .padding(horizontal = 16.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("Home Wi-Fi Only", fontSize = 16.5.sp, color = col.ink1)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("Home Wi-Fi Only", fontSize = 16.5.sp, color = col.ink1)
+                    Box(
+                        modifier = Modifier
+                            .size(26.dp)
+                            .clip(CircleShape)
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                            ) { showHomeInfo = !showHomeInfo },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        InfoCircleIcon(
+                            tint = if (showHomeInfo) col.blue else col.ink3,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                }
                 AppleSwitch(checked = folder.homeOnly, onCheckedChange = onToggleHomeOnly)
             }
+
+            AnimatedVisibility(visible = showHomeInfo, enter = springExpand, exit = springCollapse) {
+                Text(
+                    text = "Never uploaded to the cloud. Goes straight to your PC on home Wi-Fi.",
+                    fontSize = 13.sp,
+                    lineHeight = 18.sp,
+                    color = col.ink2,
+                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
+                )
+            }
         }
-        SectionFootnote("Never uploaded to the cloud. Goes straight to your PC at home.")
+
+        Hairline()
+
+        // 3. PC Folder (group multiple phone folders into one PC subfolder, e.g. WhatsApp)
+        Column(Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(54.dp)
+                    .clickable { pcFolderExpanded = !pcFolderExpanded }
+                    .padding(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("PC Folder", fontSize = 16.5.sp, color = col.ink1)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        text = folder.pcFolder,
+                        fontSize = 16.sp,
+                        fontWeight = if (pcFolderExpanded) FontWeight.SemiBold else FontWeight.Normal,
+                        color = if (pcFolderExpanded) col.blue else col.ink2,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    ChevronIcon(
+                        tint = if (pcFolderExpanded) col.blue else col.ink3,
+                        modifier = Modifier.size(13.dp).rotate(chevRot),
+                    )
+                }
+            }
+
+            AnimatedVisibility(visible = pcFolderExpanded, enter = springExpand, exit = springCollapse) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 16.dp, end = 16.dp, bottom = 14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Hairline(indent = 0.dp)
+                    if (suggestions.isNotEmpty()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            suggestions.forEach { target ->
+                                val active = target.equals(folder.pcFolder, ignoreCase = true)
+                                Box(
+                                    modifier = Modifier
+                                        .height(32.dp)
+                                        .clip(CircleShape)
+                                        .background(if (active) col.blue else col.fillSecondary)
+                                        .springClickable {
+                                            customInput = target
+                                            onSetPcFolder(target)
+                                        }
+                                        .padding(horizontal = 13.dp),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Text(
+                                        text = target,
+                                        fontSize = 13.5.sp,
+                                        fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium,
+                                        color = if (active) Color.White else col.ink1,
+                                        maxLines = 1,
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        OutlinedTextField(
+                            value = customInput,
+                            onValueChange = { customInput = it },
+                            placeholder = { Text("Folder name (e.g. WhatsApp)", fontSize = 14.sp, color = col.ink3) },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = col.blue,
+                                unfocusedBorderColor = col.hairline,
+                                focusedTextColor = col.ink1,
+                                unfocusedTextColor = col.ink1,
+                            ),
+                        )
+                        TintedBluePill(
+                            text = "Save",
+                            onClick = {
+                                onSetPcFolder(customInput)
+                                pcFolderExpanded = false
+                            },
+                        )
+                    }
+
+                    Text(
+                        text = "Saves to Library / ${FolderSelection.sanitizePcFolder(customInput).ifEmpty { folder.pcFolder }}",
+                        fontSize = 12.5.sp,
+                        color = col.ink2,
+                    )
+                }
+            }
+        }
     }
 
     SheetFullButton(text = "Done", onClick = onDismiss, bg = col.fillSecondary, fg = col.ink1)

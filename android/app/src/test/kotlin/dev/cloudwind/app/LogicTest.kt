@@ -177,4 +177,24 @@ class LogicTest {
         assertEquals(listOf("obj_501.webp", "obj_502.webp", "obj_503.webp", "obj_504.webp", "obj_505.webp"), dropped)
         assertEquals(emptyList<String>(), HistoryLogic.thumbsToPrune(thumbs.take(20), maxKeep = 500))
     }
+
+    // ---- PC destination folder defaults, sanitization, and grouping suggestions ----
+    @Test fun pc_folder_mapping_produces_clean_one_level_subfolders() {
+        assertEquals("Camera", FolderSelection.defaultPcFolder("DCIM/Camera/"))
+        assertEquals("Downloads", FolderSelection.defaultPcFolder("Download/"))
+        assertEquals("WhatsApp Images", FolderSelection.defaultPcFolder("Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Images"))
+        assertEquals("Canva", FolderSelection.defaultPcFolder("Pictures/Canva"))
+
+        assertEquals("WhatsApp", FolderSelection.sanitizePcFolder("  WhatsApp  "))
+        assertEquals("Work 2026", FolderSelection.sanitizePcFolder("../Work:2026?"))
+        assertEquals("hidden", FolderSelection.sanitizePcFolder("..hidden..."))
+        assertEquals("", FolderSelection.sanitizePcFolder("   /\\..  "))
+
+        val suggestions = FolderSelection.suggestedPcFolders(
+            relPath = "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Video",
+            displayName = "WhatsApp Video",
+            existingTargets = listOf("Camera", "WhatsApp", "Canva"),
+        )
+        assertEquals(listOf("WhatsApp", "WhatsApp Video", "Camera", "Canva"), suggestions)
+    }
 }

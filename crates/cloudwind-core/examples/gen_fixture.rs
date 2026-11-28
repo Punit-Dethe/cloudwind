@@ -8,7 +8,7 @@ fn main() {
     let key = LibraryKey::from_base64("AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8").unwrap();
     let data: Vec<u8> = (0..1000usize).map(|i| (i * 31 % 251) as u8).collect();
     let (sha256, size) = hash_reader(&data[..]).unwrap();
-    let meta = Meta { name: "fixture ü.jpg".into(), size, sha256, modified: Some(1_700_000_000) };
+    let meta = Meta { name: "fixture ü.jpg".into(), size, sha256, modified: Some(1_700_000_000), folder: None };
     let mut f = std::fs::File::create(out).unwrap();
     encrypt_with_meta(&key, &meta, &data[..], &mut f, 64).unwrap();
 }

@@ -233,6 +233,7 @@ mod tests {
             47615,
             47616,
             60,
+            true,
             "deadbeef".repeat(8),
             Some("https://cloudwind.example.workers.dev".into()),
             Some("cloudwind://pair/testpayload".into()),

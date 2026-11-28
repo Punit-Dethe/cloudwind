@@ -122,6 +122,9 @@ struct Config {
     /// Local web dashboard port on 127.0.0.1 (defaults to 47616).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     ui_port: Option<u16>,
+    /// Place incoming photos into 1-level subfolders (Camera, WhatsApp, etc.). Defaults to true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    organize_by_folder: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -168,6 +171,7 @@ pub(crate) fn update_config_file(
     library: Option<&Path>,
     sync_interval_secs: Option<u64>,
     ui_port: Option<u16>,
+    organize_by_folder: Option<bool>,
 ) -> Result<()> {
     let (mut cfg, _) = load(path)?;
     if let Some(lib) = library {
@@ -178,6 +182,9 @@ pub(crate) fn update_config_file(
     }
     if let Some(port) = ui_port {
         cfg.ui_port = Some(port);
+    }
+    if let Some(org) = organize_by_folder {
+        cfg.organize_by_folder = Some(org);
     }
     let tmp = path.with_extension("json.tmp");
     let data = serde_json::to_vec_pretty(&cfg)?;
@@ -342,6 +349,7 @@ fn daemon(cfg: Config, key: LibraryKey, state_dir: PathBuf, opts: RunOpts<'_>) -
         addr.port(),
         ui_port,
         interval,
+        cfg.organize_by_folder.unwrap_or(true),
         identity.fingerprint.clone(),
         cfg.worker.as_ref().map(|w| w.url.clone()),
         pairing_code(&cfg, &identity),
@@ -386,15 +394,21 @@ fn daemon(cfg: Config, key: LibraryKey, state_dir: PathBuf, opts: RunOpts<'_>) -
             loop {
                 rt_sync.set_syncing(true);
                 let lib = rt_sync.library_path();
-                match sync::run(inbox.as_ref(), &key, &lib, &st_sync) {
+                let organize = rt_sync.organize_by_folder();
+                match sync::run(inbox.as_ref(), &key, &lib, &st_sync, organize) {
                     Ok(r) => {
                         rt_sync.set_sync_error(None);
                         for p in &r.synced {
                             println!("synced {}", p.display());
                             let label = p
-                                .file_name()
-                                .map(|n| n.to_string_lossy().into_owned())
-                                .unwrap_or_else(|| p.display().to_string());
+                                .strip_prefix(&lib)
+                                .ok()
+                                .map(|rel| rel.to_string_lossy().replace('\\', "/"))
+                                .unwrap_or_else(|| {
+                                    p.file_name()
+                                        .map(|n| n.to_string_lossy().into_owned())
+                                        .unwrap_or_else(|| p.display().to_string())
+                                });
                             rt_sync.record_cloud(&label);
                         }
                         for (id, e) in &r.failed {
@@ -511,6 +525,7 @@ pub fn run_cli() -> Result<()> {
                 lan_port: None,
                 sync_interval_secs: None,
                 ui_port: None,
+                organize_by_folder: Some(true),
             };
             fs::create_dir_all(path.parent().unwrap())?;
             write_private(&path, &serde_json::to_vec_pretty(&cfg)?)?;
@@ -548,7 +563,7 @@ pub fn run_cli() -> Result<()> {
         Cmd::Sync => {
             let (cfg, key) = load(&path)?;
             let st = state::State::load(&state_dir(&path)?)?;
-            let r = sync::run(open_inbox(&cfg)?.as_ref(), &key, &cfg.library, &st)?;
+            let r = sync::run(open_inbox(&cfg)?.as_ref(), &key, &cfg.library, &st, cfg.organize_by_folder.unwrap_or(true))?;
             for p in &r.synced {
                 println!("synced {}", p.display());
             }
