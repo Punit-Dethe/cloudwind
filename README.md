@@ -14,7 +14,7 @@ Your photo app (Immich, LibrePhotos, PhotoPrism, Nextcloud, or plain File Explor
   <img src="docs/screenshots/history-dark.png" width="195" alt="History tab in OLED Dark Mode: 4-column backed-up photo grid with cached preview thumbnails">
   <img src="docs/screenshots/settings-dark.png" width="195" alt="Settings tab in OLED Dark Mode: Direct to PC, Start Delay, Cloud Uploads, and Home PC">
 </p>
-
+Desktop web UI
 <p>
   <img src="docs/screenshots/desktop-overview-dark.png" width="796" alt="PC desktop dashboard Overview in OLED Dark Mode: split-shell sidebar, precision ring, Cloud Inbox, Home Network, and live Recent Activity">
 </p>
