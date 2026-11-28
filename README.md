@@ -61,10 +61,8 @@ Your photo app (Immich, LibrePhotos, PhotoPrism, Nextcloud, or plain File Explor
 ## What you need
 
 - An **Android phone** running Android 11 or newer. (No iPhone app; iOS limits background work too much.)
-- A **PC** that's on sometimes: Windows, Linux or macOS.
+- A **PC** that's on sometimes: Windows (ready-made downloads in [Releases](https://github.com/Punit-Dethe/cloudwind/releases/latest)), Linux or macOS (build from source).
 - A free **Cloudflare account** for the cloud inbox.
-- For now, you build both apps yourself (see [Build from source](#build-from-source)). There are no ready-made downloads
-  yet.
 
 ## Setup
 
@@ -89,21 +87,18 @@ Tip: in the Cloudflare dashboard, set up a usage notification for R2 so nothing 
 
 ### 2. Set up the PC
 
-Build the agent (see [Build from source](#build-from-source)), then in PowerShell:
+Download `cloudwind-v0.1.0-windows-x86_64.zip` from [GitHub Releases](https://github.com/Punit-Dethe/cloudwind/releases/latest) and extract `cloudwind.exe` and `cloudwind-app.exe` (or [build from source](#build-from-source)), then in PowerShell:
 
 ```powershell
 $env:CLOUDWIND_AGENT_TOKEN = "<PC token>"
 $env:CLOUDWIND_PHONE_TOKEN = "<phone token>"
 .\cloudwind.exe init --library D:\Photos --worker-url https://cloudwind.<you>.workers.dev
-.\cloudwind.exe pair --svg pair.svg
-.\cloudwind.exe run
+.\cloudwind.exe install --autostart
 ```
 
 - **`init`** creates your settings and your **library key**. Write the key down somewhere safe: it's what decrypts
   photos that are still in the cloud. `--library` is the folder your photos will land in; pick any folder you like.
-- **`pair`** shows a QR code for the phone. If it looks garbled in the console, open `pair.svg` in a browser instead.
-  The code contains your key, so don't share a screenshot of it.
-- **`run`** is the part to leave running. It receives photos from the phone and pulls from the cloud every minute.
+- **`install --autostart`** installs Cloudwind into your Windows Start Menu and starts it quietly in the system tray at login. Click the tray icon to open the local dashboard (`http://127.0.0.1:47616`) and click **Pair Phone** for the QR code (or run `.\cloudwind.exe pair --svg pair.svg` / `.\cloudwind.exe run` from the terminal).
 - **Windows Firewall** will ask about `cloudwind` the first time. Allow it, or the phone can't reach the PC directly.
   If your home Wi-Fi is set to "Public" in Windows, allow it on Public networks, or switch the network to "Private".
 
@@ -111,7 +106,7 @@ Settings live in `%USERPROFILE%\.config\cloudwind\config.json` (`~/.config/cloud
 
 ### 3. Set up the phone
 
-1. **Install the app** (`app-debug.apk`) and open it.
+1. **Install the app** — download `cloudwind-v0.1.0-android.apk` from [GitHub Releases](https://github.com/Punit-Dethe/cloudwind/releases/latest) (or build from source) and open it.
 2. **Tap Scan QR code** and scan the code from your PC.
 3. **Allow photos and videos.** Choose **Allow all**. With "Select photos", Cloudwind can only back up the ones you
    picked, and the app will say so.
@@ -237,7 +232,7 @@ Cloudwind is an early, working build.
   - Real-phone testing of the cloud path is in progress.
 - **Not yet:**
   - Finding the PC without internet (mDNS).
-  - Ready-made release installers.
+  - Linux/macOS prebuilt binaries and guided setup wizard.
   - Built-in photo app presets.
   - Documents and PDFs.
   - Later: **Send to PC**, to share any file from your phone straight to your PC.
