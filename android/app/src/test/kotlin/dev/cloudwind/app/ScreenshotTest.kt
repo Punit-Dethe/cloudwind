@@ -193,4 +193,93 @@ class ScreenshotTest {
         dark = true,
         tab = AppTab.SETTINGS,
     )
+
+    @Test
+    fun home_pc_on_network_dark() = home(
+        UiState(
+            paired = true, server = server, directAvailable = true, pcOnNetwork = true, batteryUnrestricted = true, lastRunAt = now - 30,
+            counts = Counts(pending = 6, uploaded = 9, synced = 421, syncedBytes = 9_400_000_000L),
+            lastDirect = 38, lastCloud = 4, bigMb = 100, batteryMin = 50,
+            allFolders = true,
+        ),
+        dark = true,
+        tab = AppTab.SYNC,
+    )
+
+    @Test
+    fun tab_folders_dark() = home(
+        UiState(
+            paired = true, server = server, directAvailable = true, pcOnNetwork = true, batteryUnrestricted = true,
+            folders = listOf(
+                FolderRow("DCIM/Camera", 412, false, pending = 6, synced = 406, totalBytes = 8_400_000_000L, displayName = "Camera"),
+                FolderRow("Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Images", 184, false, synced = 184, totalBytes = 320_000_000L, displayName = "WhatsApp Images"),
+                FolderRow("Pictures/Canva", 24, true, totalBytes = 68_000_000L, displayName = "Canva"),
+            ),
+            availableFolders = listOf(
+                FolderRow("Pictures/Screenshots", 64, false, totalBytes = 160_000_000L, displayName = "Screenshots", selected = false),
+                FolderRow("Pictures/Telegram", 42, false, totalBytes = 95_000_000L, displayName = "Telegram", selected = false),
+                FolderRow("Download", 19, false, totalBytes = 140_000_000L, displayName = "Download", selected = false),
+            ),
+        ),
+        dark = true,
+        tab = AppTab.FOLDERS,
+    )
+
+    @Test
+    fun tab_history_dark() = home(
+        UiState(
+            paired = true,
+            server = server,
+            counts = Counts(pending = 0, uploaded = 3, synced = 19),
+            history = buildList {
+                for (i in 0 until 9) {
+                    val vid = i == 2 || i == 7
+                    val shot = i == 5
+                    add(
+                        HistoryItem(
+                            id = 100L + i,
+                            mediaId = 1000L + i,
+                            docUri = null,
+                            objectId = "obj_t_$i",
+                            name = when {
+                                vid -> "VID_${1040 + i}.mp4"
+                                shot -> "Screenshot_$i.png"
+                                else -> "IMG_${4831 - i}.jpg"
+                            },
+                            relPath = if (shot) "Pictures/Screenshots/" else "DCIM/Camera/",
+                            size = if (vid) 48_000_000L else 3_800_000L,
+                            isVideo = vid,
+                            durationMs = if (vid) 24_000L + i * 7_000L else 0L,
+                            route = if (i == 1 || i == 6) "cloud" else "direct",
+                            status = if (i == 1 || i == 6) "cloud" else "pc",
+                            transferredAt = now - 600L - i * 1800L,
+                            verifiedAt = if (i == 1 || i == 6) null else now - 600L - i * 1800L,
+                        ),
+                    )
+                }
+                for (i in 0 until 8) {
+                    val vid = i == 4
+                    add(
+                        HistoryItem(
+                            id = 200L + i,
+                            mediaId = 2000L + i,
+                            docUri = null,
+                            objectId = "obj_y_$i",
+                            name = if (vid) "VID_${1020 + i}.mp4" else "IMG_${4810 - i}.jpg",
+                            relPath = "DCIM/Camera/",
+                            size = if (vid) 62_000_000L else 4_100_000L,
+                            isVideo = vid,
+                            durationMs = if (vid) 51_000L else 0L,
+                            route = "direct",
+                            status = if (i == 3) "cloud" else "pc",
+                            transferredAt = now - 86_400L - i * 2400L,
+                            verifiedAt = if (i == 3) null else now - 86_400L - i * 2400L,
+                        ),
+                    )
+                }
+            },
+        ),
+        dark = true,
+        tab = AppTab.HISTORY,
+    )
 }

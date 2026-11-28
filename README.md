@@ -9,10 +9,10 @@ and the PC collects them the next time it's on. Once your PC has a verified copy
 Your photo app (Immich, LibrePhotos, PhotoPrism, Nextcloud, or plain File Explorer) just reads that folder.
 
 <p>
-  <img src="docs/screenshots/phone-8-pc-on-home-network.png" width="195" alt="Sync tab: 3-color precision ring while connected directly to your home PC">
-  <img src="docs/screenshots/phone-10-folders.png" width="195" alt="Folders tab: auto-discovered device folders and custom folder picker">
-  <img src="docs/screenshots/phone-11-history.png" width="195" alt="History tab: 4-column backed-up photo grid with cached preview thumbnails">
-  <img src="docs/screenshots/phone-12-settings-dark.png" width="195" alt="Settings tab in OLED Dark Mode: Direct to PC, Start Delay, Cloud Uploads, and Home PC">
+  <img src="docs/screenshots/sync-dark.png" width="195" alt="Sync tab in OLED Dark Mode: 3-color precision ring while connected directly to your home PC">
+  <img src="docs/screenshots/folders-dark.png" width="195" alt="Folders tab in OLED Dark Mode: auto-discovered device folders and custom folder picker">
+  <img src="docs/screenshots/history-dark.png" width="195" alt="History tab in OLED Dark Mode: 4-column backed-up photo grid with cached preview thumbnails">
+  <img src="docs/screenshots/settings-dark.png" width="195" alt="Settings tab in OLED Dark Mode: Direct to PC, Start Delay, Cloud Uploads, and Home PC">
 </p>
 
 ## Why Cloudwind
