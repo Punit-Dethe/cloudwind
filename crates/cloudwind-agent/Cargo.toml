@@ -5,9 +5,17 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[lib]
+name = "cloudwind_agent"
+path = "src/lib.rs"
+
 [[bin]]
 name = "cloudwind"
 path = "src/main.rs"
+
+[[bin]]
+name = "cloudwind-app"
+path = "src/bin/cloudwind-app.rs"
 
 [dependencies]
 cloudwind-core = { path = "../cloudwind-core" }
@@ -20,6 +28,19 @@ qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 tiny_http = { version = "0.12.0", features = ["ssl-rustls"] }
 rcgen = "0.14.10"
 if-addrs = "0.15.0"
+
+[target.'cfg(windows)'.dependencies]
+tray-icon = "0.27"
+windows-sys = { version = "0.61", features = [
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Foundation",
+    "Win32_System_Memory",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+] }
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
 
 [dev-dependencies]
 tempfile = "3"

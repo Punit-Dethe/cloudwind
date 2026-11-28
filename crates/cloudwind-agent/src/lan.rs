@@ -20,7 +20,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use cloudwind_core::{base64, hash_reader, LibraryKey};
 use serde::{Deserialize, Serialize};
 
-use crate::{state::State, sync};
+use crate::{runtime::Runtime, state::State, sync};
 
 pub const DEFAULT_PORT: u16 = 47615;
 const MAX_JSON_BODY: u64 = 8 << 20;
@@ -148,6 +148,7 @@ pub struct Lan {
     /// that file would answer "busy" to every retry.
     stale_after: Duration,
     cloud_cache: Mutex<Option<(Instant, HashSet<String>)>>,
+    runtime: Option<Arc<Runtime>>,
 }
 
 /// Releases ownership when a transfer ends, but only if it still owns the slot.
@@ -176,7 +177,13 @@ impl Lan {
             next_gen: AtomicU64::new(1),
             stale_after: Duration::from_secs(15),
             cloud_cache: Mutex::new(None),
+            runtime: None,
         }
+    }
+
+    pub fn with_runtime(mut self, runtime: Arc<Runtime>) -> Self {
+        self.runtime = Some(runtime);
+        self
     }
 
     /// Take ownership of a hash's partial file, or None if a live transfer holds it.
@@ -278,7 +285,7 @@ impl Lan {
 
         let mut out = OpenOptions::new().append(true).open(&part)?;
         let mut limited = body.take(size.saturating_sub(offset));
-        let mut buf = vec![0u8; 256 * 1024];
+        let mut buf = [0u8; 64 * 1024];
         loop {
             match limited.read(&mut buf) {
                 Ok(0) => break,
@@ -302,12 +309,25 @@ impl Lan {
             let _ = fs::remove_file(&part);
             return Ok(Received::BadHash);
         }
-        let stored = sync::place(&self.library, &self.state, &part, name, modified, sha256)?;
+        let lib = self.runtime.as_ref().map(|r| r.library_path()).unwrap_or_else(|| self.library.clone());
+        let stored = sync::place(&lib, &self.state, &part, name, modified, sha256)?;
         match &stored {
-            Some(p) => println!("received {} (direct)", p.display()),
-            None => println!("received {name} (direct, already had it)"),
+            Some(p) => {
+                println!("received {} (direct)", p.display());
+                if let Some(rt) = &self.runtime {
+                    let label = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| name.to_string());
+                    rt.record_direct(&label, false);
+                }
+            }
+            None => {
+                println!("received {name} (direct, already had it)");
+                if let Some(rt) = &self.runtime {
+                    rt.record_direct(name, true);
+                }
+            }
         }
         self.cloud_done(object);
+        crate::runtime::trim_memory();
         Ok(Received::Stored { path: stored })
     }
 
@@ -414,11 +434,14 @@ pub fn start(identity: &Identity, bind: &str, port: u16) -> Result<(Arc<tiny_htt
     Ok((Arc::new(server), addr))
 }
 
-/// Serve requests until the server is dropped; one thread per request.
+/// Serve requests until the server is dropped; one lean thread per request.
 pub fn serve(lan: Arc<Lan>, server: Arc<tiny_http::Server>) {
     for req in server.incoming_requests() {
         let lan = lan.clone();
-        std::thread::spawn(move || lan.handle(req));
+        let _ = std::thread::Builder::new()
+            .name("lan-req".into())
+            .stack_size(256 * 1024)
+            .spawn(move || lan.handle(req));
     }
 }
 

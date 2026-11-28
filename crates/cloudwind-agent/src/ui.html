@@ -1,0 +1,898 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cloudwind</title>
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --surface: #ffffff;
+      --surface-2: #f0f2f5;
+      --border: #e2e6ec;
+      --text: #111827;
+      --muted: #5b6474;
+      --accent: #2563eb;
+      --accent-soft: #eff6ff;
+      --ok: #15803d;
+      --ok-soft: #dcfce7;
+      --warn: #b45309;
+      --warn-soft: #fef3c7;
+      --err: #b91c1c;
+      --err-soft: #fee2e2;
+      --shadow: 0 1px 2px rgba(16, 24, 40, 0.05);
+      --radius: 14px;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) {
+        --bg: #0c0f14;
+        --surface: #141922;
+        --surface-2: #1c2330;
+        --border: #252e3d;
+        --text: #f3f5f8;
+        --muted: #94a0b4;
+        --accent: #60a5fa;
+        --accent-soft: rgba(96, 165, 250, 0.14);
+        --ok: #4ade80;
+        --ok-soft: rgba(74, 222, 128, 0.14);
+        --warn: #fbbf24;
+        --warn-soft: rgba(251, 191, 36, 0.14);
+        --err: #f87171;
+        --err-soft: rgba(248, 113, 113, 0.14);
+        --shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+      }
+    }
+    :root[data-theme="dark"] {
+      --bg: #0c0f14;
+      --surface: #141922;
+      --surface-2: #1c2330;
+      --border: #252e3d;
+      --text: #f3f5f8;
+      --muted: #94a0b4;
+      --accent: #60a5fa;
+      --accent-soft: rgba(96, 165, 250, 0.14);
+      --ok: #4ade80;
+      --ok-soft: rgba(74, 222, 128, 0.14);
+      --warn: #fbbf24;
+      --warn-soft: rgba(251, 191, 36, 0.14);
+      --err: #f87171;
+      --err-soft: rgba(248, 113, 113, 0.14);
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    .wrap {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 28px 20px 48px;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+      margin-bottom: 18px;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .logo {
+      width: 36px;
+      height: 36px;
+      border-radius: 10px;
+      background: var(--accent);
+      color: #fff;
+      display: grid;
+      place-items: center;
+      flex-shrink: 0;
+    }
+    h1 {
+      font-size: 18px;
+      font-weight: 650;
+      margin: 0;
+      letter-spacing: -0.01em;
+    }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      font-size: 12px;
+      font-weight: 500;
+      padding: 3px 10px;
+      border-radius: 999px;
+      background: var(--ok-soft);
+      color: var(--ok);
+      margin-top: 2px;
+    }
+    .pill.syncing { background: var(--accent-soft); color: var(--accent); }
+    .pill.warn { background: var(--warn-soft); color: var(--warn); }
+    .pill.err { background: var(--err-soft); color: var(--err); }
+    .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+    .pill.syncing .dot { animation: pulse 1.1s ease-in-out infinite; }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+    .actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    button {
+      font: inherit;
+      font-weight: 500;
+      font-size: 13px;
+      padding: 8px 14px;
+      border-radius: 9px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
+      cursor: pointer;
+      transition: background 0.12s, border-color 0.12s, opacity 0.12s;
+    }
+    button:hover { background: var(--surface-2); }
+    button:disabled { opacity: 0.55; cursor: default; }
+    button.primary {
+      background: var(--accent);
+      border-color: transparent;
+      color: #fff;
+    }
+    button.primary:hover { filter: brightness(1.06); }
+
+    .tabs {
+      display: flex;
+      gap: 4px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 20px;
+    }
+    .tab {
+      border: none;
+      border-bottom: 2px solid transparent;
+      border-radius: 0;
+      background: transparent;
+      color: var(--muted);
+      padding: 9px 14px;
+      margin-bottom: -1px;
+      font-weight: 600;
+      font-size: 13px;
+    }
+    .tab:hover { background: transparent; color: var(--text); }
+    .tab.active {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+    }
+    .view { display: none; }
+    .view.active { display: block; }
+
+    .banner {
+      display: none;
+      padding: 12px 16px;
+      border-radius: 12px;
+      margin-bottom: 16px;
+      font-size: 13px;
+      font-weight: 500;
+    }
+    .banner.show { display: block; }
+    .banner.warn { background: var(--warn-soft); color: var(--warn); }
+    .banner.err { background: var(--err-soft); color: var(--err); }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      margin-bottom: 18px;
+    }
+    @media (max-width: 760px) {
+      .grid { grid-template-columns: 1fr; }
+    }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 18px;
+      box-shadow: var(--shadow);
+    }
+    .card + .card { margin-top: 14px; }
+    .card h2 {
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+      margin: 0 0 10px;
+    }
+    .big {
+      font-size: 24px;
+      font-weight: 650;
+      letter-spacing: -0.02em;
+      margin: 0 0 4px;
+    }
+    .sub {
+      color: var(--muted);
+      font-size: 13px;
+      margin: 0;
+    }
+    .mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      word-break: break-all;
+    }
+    .bar-track {
+      height: 8px;
+      border-radius: 999px;
+      background: var(--surface-2);
+      overflow: hidden;
+      margin: 12px 0 8px;
+    }
+    .bar-fill {
+      height: 100%;
+      width: 0%;
+      border-radius: 999px;
+      background: var(--accent);
+      transition: width 0.3s ease;
+    }
+    .bar-fill.high { background: var(--warn); }
+    .bar-fill.full { background: var(--err); }
+
+    .meta-list {
+      margin: 12px 0 0;
+      padding: 10px 0 0;
+      border-top: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .meta-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .meta-row strong {
+      color: var(--text);
+      font-weight: 500;
+      text-align: right;
+    }
+
+    .activity-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+    .activity-head h2 { margin: 0; }
+    .list {
+      display: flex;
+      flex-direction: column;
+    }
+    .row {
+      display: grid;
+      grid-template-columns: 74px 1fr auto;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 0;
+      border-top: 1px solid var(--border);
+      font-size: 13px;
+    }
+    .row:first-child { border-top: none; padding-top: 2px; }
+    .badge {
+      display: inline-block;
+      text-align: center;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 999px;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+    .badge.direct { background: var(--ok-soft); color: var(--ok); }
+    .badge.cloud { background: var(--accent-soft); color: var(--accent); }
+    .badge.error { background: var(--err-soft); color: var(--err); }
+    .badge.info { background: var(--surface-2); color: var(--muted); }
+    .msg { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .time { color: var(--muted); font-size: 12px; white-space: nowrap; }
+    .empty {
+      padding: 24px 0 12px;
+      text-align: center;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    /* Settings rows */
+    .setting-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 14px 0;
+      border-top: 1px solid var(--border);
+      flex-wrap: wrap;
+    }
+    .setting-row:first-of-type { border-top: none; padding-top: 4px; }
+    .setting-row:last-of-type { padding-bottom: 2px; }
+    .setting-info { min-width: 220px; flex: 1; }
+    .setting-title { font-weight: 600; font-size: 14px; margin: 0 0 2px; }
+    .setting-desc { color: var(--muted); font-size: 12.5px; margin: 0; }
+
+    .switch {
+      position: relative;
+      display: inline-block;
+      width: 44px;
+      height: 24px;
+      flex-shrink: 0;
+    }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .slider {
+      position: absolute;
+      inset: 0;
+      cursor: pointer;
+      background: var(--border);
+      border-radius: 999px;
+      transition: background 0.18s;
+    }
+    .slider::before {
+      content: "";
+      position: absolute;
+      width: 18px;
+      height: 18px;
+      left: 3px;
+      top: 3px;
+      border-radius: 50%;
+      background: #fff;
+      transition: transform 0.18s;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.25);
+    }
+    .switch input:checked + .slider { background: var(--accent); }
+    .switch input:checked + .slider::before { transform: translateX(20px); }
+
+    select, input[type="text"], input[type="number"] {
+      font: inherit;
+      font-size: 13px;
+      padding: 7px 10px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--surface-2);
+      color: var(--text);
+    }
+    .input-group {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .input-group input[type="text"] { min-width: 260px; }
+
+    .toast {
+      position: fixed;
+      right: 20px;
+      bottom: 20px;
+      padding: 10px 14px;
+      border-radius: 10px;
+      background: var(--text);
+      color: var(--bg);
+      font-size: 13px;
+      font-weight: 500;
+      opacity: 0;
+      transform: translateY(8px);
+      pointer-events: none;
+      transition: opacity 0.18s, transform 0.18s;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.22);
+    }
+    .toast.show { opacity: 1; transform: translateY(0); }
+
+    dialog {
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      background: var(--surface);
+      color: var(--text);
+      padding: 22px;
+      max-width: 400px;
+      width: calc(100% - 32px);
+      box-shadow: 0 20px 50px rgba(0,0,0,0.28);
+    }
+    dialog::backdrop { background: rgba(0, 0, 0, 0.48); backdrop-filter: blur(2px); }
+    .qr-box {
+      background: #fff;
+      border-radius: 12px;
+      padding: 14px;
+      display: flex;
+      justify-content: center;
+      margin: 14px 0;
+    }
+    .qr-box svg { max-width: 240px; height: auto; display: block; }
+    .pair-warn {
+      font-size: 12px;
+      color: var(--warn);
+      background: var(--warn-soft);
+      padding: 8px 10px;
+      border-radius: 8px;
+      margin-bottom: 12px;
+    }
+    .code-box {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 10px;
+      max-height: 74px;
+      overflow: auto;
+      margin-bottom: 14px;
+    }
+    .modal-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="brand">
+        <div class="logo" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>
+          </svg>
+        </div>
+        <div>
+          <h1>Cloudwind</h1>
+          <div id="status-pill" class="pill"><span class="dot"></span><span id="status-text">Connecting…</span></div>
+        </div>
+      </div>
+      <div class="actions">
+        <button id="btn-sync" class="primary">Sync now</button>
+        <button id="btn-folder">Open folder</button>
+        <button id="btn-pair">Pair phone</button>
+        <button id="btn-theme" title="Toggle theme">Theme</button>
+      </div>
+    </header>
+
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-tab="overview" role="tab" aria-selected="true">Overview</button>
+      <button class="tab" data-tab="settings" role="tab" aria-selected="false">Settings</button>
+    </nav>
+
+    <div id="view-overview" class="view active">
+      <div id="banner-warn" class="banner warn"></div>
+      <div id="banner-err" class="banner err"></div>
+
+      <div class="grid">
+        <section class="card">
+          <h2>Library</h2>
+          <p class="big" id="stored-count">—</p>
+          <p class="sub" id="session-counts">This session: —</p>
+          <div class="meta-list">
+            <div class="meta-row"><span>Folder</span><strong class="mono" id="lib-path">—</strong></div>
+            <div class="meta-row"><span>Retrying</span><strong id="backed-off">0</strong></div>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2>Cloud Inbox</h2>
+          <p class="big" id="pending-count">—</p>
+          <p class="sub" id="inbox-usage">Checking inbox…</p>
+          <div class="bar-track"><div id="inbox-bar" class="bar-fill"></div></div>
+          <div class="meta-list">
+            <div class="meta-row"><span>Last check</span><strong id="last-check">—</strong></div>
+            <div class="meta-row"><span>Worker</span><strong class="mono" id="worker-host">—</strong></div>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2>Phone &amp; Home Network</h2>
+          <p class="big" id="phone-seen">—</p>
+          <p class="sub" id="phone-desc">Waiting for status…</p>
+          <div class="meta-list">
+            <div class="meta-row"><span>Direct address</span><strong class="mono" id="lan-addr">—</strong></div>
+            <div class="meta-row"><span>Cert fingerprint</span><strong class="mono" id="cert-fp">—</strong></div>
+          </div>
+        </section>
+      </div>
+
+      <section class="card">
+        <div class="activity-head">
+          <h2>Recent Activity</h2>
+          <span class="sub" id="uptime"></span>
+        </div>
+        <div id="activity-list" class="list">
+          <div class="empty">No transfers yet in this session.</div>
+        </div>
+      </section>
+    </div>
+
+    <div id="view-settings" class="view">
+      <section class="card">
+        <h2>Startup &amp; Sync</h2>
+        <div class="setting-row">
+          <div class="setting-info">
+            <p class="setting-title">Start Cloudwind when Windows starts</p>
+            <p class="setting-desc">Launches quietly in the system tray at login with no terminal window.</p>
+          </div>
+          <label class="switch" aria-label="Start Cloudwind when Windows starts">
+            <input type="checkbox" id="set-autostart">
+            <span class="slider"></span>
+          </label>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <p class="setting-title">Cloud inbox check interval</p>
+            <p class="setting-desc">How often the PC checks your cloud inbox and updates its home-network address hint.</p>
+          </div>
+          <select id="set-interval">
+            <option value="30">Every 30 seconds</option>
+            <option value="60">Every 1 minute (default)</option>
+            <option value="120">Every 2 minutes</option>
+            <option value="300">Every 5 minutes</option>
+            <option value="600">Every 10 minutes</option>
+          </select>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Storage &amp; Network</h2>
+        <div class="setting-row">
+          <div class="setting-info">
+            <p class="setting-title">Photo library folder</p>
+            <p class="setting-desc">Verified photos from both direct and cloud sync are saved here.</p>
+          </div>
+          <div class="input-group">
+            <input type="text" id="set-library" class="mono" placeholder="D:\Photos">
+            <button id="btn-save-library" class="primary">Save</button>
+          </div>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <p class="setting-title">Local dashboard port</p>
+            <p class="setting-desc">Loopback-only (`127.0.0.1`). Changing this takes effect the next time Cloudwind starts.</p>
+          </div>
+          <div class="input-group">
+            <input type="number" id="set-ui-port" min="1024" max="65535" style="width:110px;">
+            <button id="btn-save-port">Save</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Windows App &amp; System</h2>
+        <div class="setting-row">
+          <div class="setting-info">
+            <p class="setting-title">Start Menu &amp; Installed Apps</p>
+            <p class="setting-desc" id="install-desc">Checking installation status…</p>
+          </div>
+          <button id="btn-install">Install App</button>
+        </div>
+
+        <div class="meta-list">
+          <div class="meta-row"><span>Version</span><strong id="app-version">—</strong></div>
+          <div class="meta-row"><span>Direct LAN port</span><strong class="mono" id="set-lan-port">—</strong></div>
+          <div class="meta-row"><span>Config file</span><strong class="mono" id="set-config-path">—</strong></div>
+          <div class="meta-row"><span>Running binary</span><strong class="mono" id="set-exe-path">—</strong></div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <dialog id="pair-dialog">
+    <h2 style="margin:0 0 6px;font-size:16px;">Pair your Android phone</h2>
+    <p class="sub" style="margin-bottom:12px;">Open Cloudwind on your phone and tap <strong>Scan QR code</strong>.</p>
+    <div class="pair-warn">This QR code contains your encryption key. Don't share a screenshot of it.</div>
+    <div id="qr-box" class="qr-box">Loading…</div>
+    <div id="pair-code" class="code-box mono"></div>
+    <div class="modal-actions">
+      <button id="btn-copy-code">Copy code</button>
+      <button id="btn-close-pair" class="primary">Done</button>
+    </div>
+  </dialog>
+
+  <script>
+    const $ = id => document.getElementById(id);
+    let toastTimer = null;
+
+    function showToast(msg) {
+      const el = $("toast");
+      el.textContent = msg;
+      el.classList.add("show");
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => el.classList.remove("show"), 2600);
+    }
+
+    function fmtBytes(b) {
+      if (b == null) return "—";
+      if (b < 1024) return b + " B";
+      if (b < 1048576) return (b / 1024).toFixed(1) + " KB";
+      if (b < 1073741824) return (b / 1048576).toFixed(1) + " MB";
+      return (b / 1073741824).toFixed(2) + " GB";
+    }
+
+    function fmtAgo(ts, now) {
+      if (!ts) return "never";
+      const s = Math.max(0, (now || Math.floor(Date.now() / 1000)) - ts);
+      if (s < 60) return "just now";
+      if (s < 3600) return Math.floor(s / 60) + " min ago";
+      if (s < 86400) return Math.floor(s / 3600) + " h ago";
+      const d = Math.floor(s / 86400);
+      return d + (d === 1 ? " day ago" : " days ago");
+    }
+
+    function esc(s) {
+      return String(s).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+    }
+
+    // Tabs
+    document.querySelectorAll(".tab").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const target = btn.dataset.tab;
+        document.querySelectorAll(".tab").forEach(b => {
+          b.classList.toggle("active", b === btn);
+          b.setAttribute("aria-selected", b === btn ? "true" : "false");
+        });
+        document.querySelectorAll(".view").forEach(v => v.classList.remove("active"));
+        $("view-" + target).classList.add("active");
+        if (target === "settings") loadSettings();
+      });
+    });
+
+    async function refresh() {
+      try {
+        const res = await fetch("/api/status", { cache: "no-store" });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        render(await res.json());
+      } catch {
+        $("status-pill").className = "pill err";
+        $("status-text").textContent = "Agent unreachable";
+      }
+    }
+
+    function render(d) {
+      const pill = $("status-pill");
+      const text = $("status-text");
+      if (d.syncing) {
+        pill.className = "pill syncing";
+        text.textContent = "Syncing from cloud…";
+      } else if (d.last_sync_error) {
+        pill.className = "pill err";
+        text.textContent = "Cloud check failed";
+      } else if (d.health && d.health.phone_stalled) {
+        pill.className = "pill warn";
+        text.textContent = "Phone quiet > 48h";
+      } else {
+        pill.className = "pill";
+        text.textContent = "Listening on home network";
+      }
+      $("btn-sync").disabled = !!d.syncing;
+      $("btn-pair").style.display = d.has_pairing_code ? "" : "none";
+
+      const warn = $("banner-warn");
+      if (d.health && d.health.phone_stalled) {
+        warn.textContent = d.health.phone_description;
+        warn.className = "banner warn show";
+      } else {
+        warn.className = "banner warn";
+      }
+      const err = $("banner-err");
+      const errs = [d.last_sync_error && ("Cloud sync: " + d.last_sync_error), d.last_hint_error && ("LAN announcement: " + d.last_hint_error)].filter(Boolean);
+      if (errs.length) {
+        err.textContent = errs.join(" · ");
+        err.className = "banner err show";
+      } else {
+        err.className = "banner err";
+      }
+
+      $("stored-count").textContent = d.total_stored.toLocaleString() + " files";
+      $("session-counts").textContent = `This session: ${d.session_direct} direct · ${d.session_cloud} cloud`;
+      $("lib-path").textContent = d.library;
+      $("backed-off").textContent = d.backed_off;
+
+      $("last-check").textContent = d.last_check_at ? fmtAgo(d.last_check_at, d.now) : "starting…";
+      try {
+        $("worker-host").textContent = d.worker_url ? new URL(d.worker_url).host : "local folder";
+      } catch {
+        $("worker-host").textContent = d.worker_url || "local folder";
+      }
+      if (d.health) {
+        const h = d.health;
+        $("pending-count").textContent = h.pending_count === 0 ? "All caught up" : `${h.pending_count} waiting`;
+        $("inbox-usage").textContent = `${fmtBytes(h.inbox_bytes)} of ${fmtBytes(h.cap_bytes)} used` + (h.pending_count ? ` (${fmtBytes(h.pending_bytes)} waiting)` : "");
+        const pct = h.cap_bytes > 0 ? Math.min(100, (h.inbox_bytes / h.cap_bytes) * 100) : 0;
+        const bar = $("inbox-bar");
+        bar.style.width = pct.toFixed(1) + "%";
+        bar.className = "bar-fill" + (pct >= 90 ? " full" : pct >= 60 ? " high" : "");
+      } else {
+        $("pending-count").textContent = d.worker_url ? "—" : "Local mode";
+        $("inbox-usage").textContent = d.worker_url ? "Waiting for first cloud check…" : "Using local folder inbox";
+      }
+
+      if (d.health) {
+        $("phone-seen").textContent = d.health.phone_last_seen ? fmtAgo(d.health.phone_last_seen, d.now) : "Not yet";
+        $("phone-desc").textContent = d.health.phone_description;
+      } else {
+        $("phone-seen").textContent = "Ready";
+        $("phone-desc").textContent = "Listening for direct transfers";
+      }
+      $("lan-addr").textContent = d.lan_ips.length
+        ? d.lan_ips.map(ip => `${ip}:${d.lan_port}`).join(", ")
+        : `port ${d.lan_port}`;
+      $("cert-fp").textContent = d.cert_fingerprint.slice(0, 12) + "…";
+
+      $("uptime").textContent = "Started " + fmtAgo(d.started_at, d.now);
+      const list = $("activity-list");
+      if (!d.recent.length) {
+        list.innerHTML = '<div class="empty">No transfers yet in this session. Take a photo on your phone to see it arrive here.</div>';
+      } else {
+        list.innerHTML = d.recent.map(ev => `
+          <div class="row">
+            <span class="badge ${esc(ev.kind)}">${esc(ev.kind)}</span>
+            <span class="msg" title="${esc(ev.message)}">${esc(ev.message)}</span>
+            <span class="time">${fmtAgo(ev.at, d.now)}</span>
+          </div>
+        `).join("");
+      }
+    }
+
+    async function loadSettings() {
+      try {
+        const res = await fetch("/api/settings", { cache: "no-store" });
+        if (!res.ok) return;
+        renderSettings(await res.json());
+      } catch {}
+    }
+
+    function renderSettings(s) {
+      $("set-autostart").checked = !!s.start_on_login;
+      const sel = $("set-interval");
+      if ([...sel.options].some(o => Number(o.value) === s.sync_interval_secs)) {
+        sel.value = String(s.sync_interval_secs);
+      } else {
+        const opt = document.createElement("option");
+        opt.value = String(s.sync_interval_secs);
+        opt.textContent = `Every ${s.sync_interval_secs} seconds`;
+        sel.appendChild(opt);
+        sel.value = String(s.sync_interval_secs);
+      }
+      $("set-library").value = s.library || "";
+      $("set-ui-port").value = s.ui_port || 47616;
+      $("app-version").textContent = "v" + s.version;
+      $("set-lan-port").textContent = s.lan_port;
+      $("set-config-path").textContent = s.config_path || "—";
+      $("set-exe-path").textContent = s.exe_path || "—";
+
+      if (s.installed) {
+        $("install-desc").textContent = "Installed in " + (s.install_dir || "Windows Apps") + " and available in Start Menu.";
+        $("btn-install").textContent = "Update installed app";
+      } else {
+        $("install-desc").textContent = "Not yet installed into Start Menu / Windows Installed Apps.";
+        $("btn-install").textContent = "Install to Windows Apps";
+      }
+    }
+
+    async function patchSettings(patch, okMsg) {
+      const res = await fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast("Error: " + (data.error || "failed"));
+        loadSettings();
+        return;
+      }
+      renderSettings(data);
+      showToast(okMsg);
+      refresh();
+    }
+
+    $("set-autostart").addEventListener("change", e => {
+      const on = e.target.checked;
+      patchSettings({ start_on_login: on }, on ? "Will start automatically with Windows" : "Startup on login disabled");
+    });
+
+    $("set-interval").addEventListener("change", e => {
+      patchSettings({ sync_interval_secs: Number(e.target.value) }, "Sync interval updated");
+    });
+
+    $("btn-save-library").addEventListener("click", () => {
+      patchSettings({ library: $("set-library").value }, "Photo library folder updated");
+    });
+
+    $("btn-save-port").addEventListener("click", () => {
+      patchSettings({ ui_port: Number($("set-ui-port").value) }, "Dashboard port saved (applies on next start)");
+    });
+
+    $("btn-install").addEventListener("click", async () => {
+      $("btn-install").disabled = true;
+      try {
+        const res = await fetch("/api/install", { method: "POST" });
+        const data = await res.json();
+        if (!res.ok) {
+          showToast("Install error: " + (data.error || "failed"));
+        } else {
+          renderSettings(data);
+          showToast("Installed Cloudwind to Windows Apps & Start Menu");
+        }
+      } finally {
+        $("btn-install").disabled = false;
+      }
+    });
+
+    $("btn-sync").addEventListener("click", async () => {
+      $("btn-sync").disabled = true;
+      await fetch("/api/sync", { method: "POST" });
+      setTimeout(refresh, 300);
+    });
+
+    $("btn-folder").addEventListener("click", () => {
+      fetch("/api/open-library", { method: "POST" });
+    });
+
+    $("btn-pair").addEventListener("click", async () => {
+      const dlg = $("pair-dialog");
+      $("qr-box").textContent = "Loading…";
+      $("pair-code").textContent = "";
+      dlg.showModal();
+      try {
+        const res = await fetch("/api/pair", { cache: "no-store" });
+        const d = await res.json();
+        if (d.svg) {
+          $("qr-box").innerHTML = d.svg;
+          $("pair-code").textContent = d.code;
+        } else {
+          $("qr-box").textContent = "No pairing code configured.";
+        }
+      } catch {
+        $("qr-box").textContent = "Could not load pairing code.";
+      }
+    });
+
+    $("btn-copy-code").addEventListener("click", async () => {
+      const code = $("pair-code").textContent;
+      if (!code) return;
+      await navigator.clipboard.writeText(code);
+      $("btn-copy-code").textContent = "Copied";
+      setTimeout(() => $("btn-copy-code").textContent = "Copy code", 1500);
+    });
+
+    $("btn-close-pair").addEventListener("click", () => $("pair-dialog").close());
+    $("pair-dialog").addEventListener("click", e => { if (e.target === $("pair-dialog")) $("pair-dialog").close(); });
+
+    $("btn-theme").addEventListener("click", () => {
+      const cur = document.documentElement.getAttribute("data-theme");
+      const prefersDark = matchMedia("(prefers-color-scheme: dark)").matches;
+      const next = cur ? (cur === "dark" ? "light" : "dark") : (prefersDark ? "light" : "dark");
+      document.documentElement.setAttribute("data-theme", next);
+      localStorage.setItem("cw-theme", next);
+    });
+    const saved = localStorage.getItem("cw-theme");
+    if (saved) document.documentElement.setAttribute("data-theme", saved);
+
+    let timer = null;
+    function startPolling() {
+      if (timer) return;
+      refresh();
+      timer = setInterval(() => { if (!document.hidden) refresh(); }, 3000);
+    }
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) refresh();
+    });
+    startPolling();
+  </script>
+</body>
+</html>

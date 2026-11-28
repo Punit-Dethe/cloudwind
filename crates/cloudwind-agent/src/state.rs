@@ -21,8 +21,65 @@ struct Failure {
     retry_at: u64,
 }
 
+#[derive(Hash, PartialEq, Eq)]
+enum SeenKey {
+    /// Real 64-char hex SHA-256 stored inline (32 bytes, zero heap allocation).
+    Sha256([u8; 32]),
+    /// Fallback for non-SHA strings (e.g. unit tests).
+    Other(Box<str>),
+}
+
+impl SeenKey {
+    fn parse(s: &str) -> Self {
+        if let Some(bytes) = decode_sha256_hex(s) {
+            Self::Sha256(bytes)
+        } else {
+            Self::Other(s.into())
+        }
+    }
+
+    fn to_hex_line(&self) -> String {
+        match self {
+            Self::Sha256(b) => {
+                let mut out = String::with_capacity(65);
+                const HEX: &[u8; 16] = b"0123456789abcdef";
+                for &byte in b {
+                    out.push(HEX[(byte >> 4) as usize] as char);
+                    out.push(HEX[(byte & 0x0f) as usize] as char);
+                }
+                out.push('\n');
+                out
+            }
+            Self::Other(s) => format!("{s}\n"),
+        }
+    }
+}
+
+fn decode_sha256_hex(s: &str) -> Option<[u8; 32]> {
+    let b = s.as_bytes();
+    if b.len() != 64 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for i in 0..32 {
+        let hi = hex_nibble(b[i * 2])?;
+        let lo = hex_nibble(b[i * 2 + 1])?;
+        out[i] = (hi << 4) | lo;
+    }
+    Some(out)
+}
+
+fn hex_nibble(c: u8) -> Option<u8> {
+    match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        b'A'..=b'F' => Some(c - b'A' + 10),
+        _ => None,
+    }
+}
+
 struct Inner {
-    seen: HashSet<String>,
+    seen: HashSet<SeenKey>,
     failures: HashMap<String, Failure>,
 }
 
@@ -40,13 +97,15 @@ impl State {
     pub fn load(dir: &Path) -> Result<Self> {
         fs::create_dir_all(dir.join("tmp"))?;
         fs::create_dir_all(dir.join("lan"))?;
-        let seen = fs::read_to_string(dir.join("seen.txt"))
-            .map(|t| t.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect())
+        let mut seen: HashSet<SeenKey> = fs::read_to_string(dir.join("seen.txt"))
+            .map(|t| t.lines().map(str::trim).filter(|l| !l.is_empty()).map(SeenKey::parse).collect())
             .unwrap_or_default();
-        let failures = fs::read(dir.join("failures.json"))
+        seen.shrink_to_fit();
+        let mut failures: HashMap<String, Failure> = fs::read(dir.join("failures.json"))
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
+        failures.shrink_to_fit();
         Ok(Self { dir: dir.to_path_buf(), inner: Mutex::new(Inner { seen, failures }) })
     }
 
@@ -61,14 +120,22 @@ impl State {
     }
 
     pub fn has_seen(&self, sha256: &str) -> bool {
-        self.inner.lock().unwrap().seen.contains(sha256)
+        self.inner.lock().unwrap().seen.contains(&SeenKey::parse(sha256))
+    }
+
+    pub fn seen_count(&self) -> usize {
+        self.inner.lock().unwrap().seen.len()
+    }
+
+    pub fn failure_count(&self) -> usize {
+        self.inner.lock().unwrap().failures.len()
     }
 
     /// Atomically claim a hash. True if it was new (the caller now owns storing it); false if some
     /// other route (cloud pull vs direct) already stored or is storing it.
     pub fn claim(&self, sha256: &str) -> Result<bool> {
         let mut g = self.inner.lock().unwrap();
-        if !g.seen.insert(sha256.to_string()) {
+        if !g.seen.insert(SeenKey::parse(sha256)) {
             return Ok(false);
         }
         let mut f = OpenOptions::new().create(true).append(true).open(self.dir.join("seen.txt"))?;
@@ -79,8 +146,8 @@ impl State {
     /// Undo a claim when storing failed after it, so the file can be retried.
     pub fn unclaim(&self, sha256: &str) {
         let mut g = self.inner.lock().unwrap();
-        if g.seen.remove(sha256) {
-            let text: String = g.seen.iter().map(|h| format!("{h}\n")).collect();
+        if g.seen.remove(&SeenKey::parse(sha256)) {
+            let text: String = g.seen.iter().map(SeenKey::to_hex_line).collect();
             let _ = fs::write(self.dir.join("seen.txt"), text);
         }
     }

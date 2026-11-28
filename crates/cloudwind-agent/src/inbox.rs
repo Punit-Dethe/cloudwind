@@ -15,7 +15,7 @@ pub struct Receipt {
 }
 
 /// Where encrypted objects wait. A local folder for testing, or the Cloudflare Worker.
-pub trait Inbox {
+pub trait Inbox: Send {
     /// Ids of objects that have not been synced yet.
     fn pending(&self) -> Result<Vec<String>>;
     /// Download the ciphertext to `dest`. If `dest` already holds a partial download, continue it.

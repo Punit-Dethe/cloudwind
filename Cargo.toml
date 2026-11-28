@@ -6,3 +6,19 @@ members = ["crates/cloudwind-core", "crates/cloudwind-agent"]
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
+
+[profile.release]
+# Optimize for small code pages (lower resident working set & smaller binary) while keeping crypto hot loops fast.
+opt-level = "s"
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
+[profile.release.package.cloudwind-core]
+opt-level = 3
+
+[profile.release.package.chacha20poly1305]
+opt-level = 3
+
+[profile.release.package.sha2]
+opt-level = 3

@@ -56,8 +56,11 @@ impl RemoteInbox {
     pub fn new(base: &str, token: &str) -> Self {
         // Without timeouts a connection that died while the PC slept would block the daemon forever.
         // `timeout_read` is per read call, so long downloads are fine as long as bytes keep flowing.
+        // Keep the idle connection pool minimal (default is 100) so idle RAM stays low.
         let agent = ureq::AgentBuilder::new()
             .try_proxy_from_env(true)
+            .max_idle_connections(1)
+            .max_idle_connections_per_host(1)
             .timeout_connect(Duration::from_secs(15))
             .timeout_read(Duration::from_secs(60))
             .timeout_write(Duration::from_secs(60))
@@ -249,6 +252,18 @@ mod tests {
         assert_eq!(reqs.len(), 2, "one failed attempt, one resume");
         assert_eq!(reqs[0], None);
         assert_eq!(reqs[1], Some("100000".to_string()), "resumed at the byte where it stopped");
+    }
+}
+
+impl Inbox for std::sync::Arc<RemoteInbox> {
+    fn pending(&self) -> Result<Vec<String>> {
+        (**self).pending()
+    }
+    fn fetch(&self, id: &str, dest: &Path) -> Result<()> {
+        (**self).fetch(id, dest)
+    }
+    fn put_receipt(&self, id: &str, r: &Receipt) -> Result<()> {
+        (**self).put_receipt(id, r)
     }
 }
 

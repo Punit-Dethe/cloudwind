@@ -108,7 +108,7 @@ pub struct Meta {
 /// Hash a reader with SHA-256, returning lowercase hex and the byte count.
 pub fn hash_reader(mut r: impl Read) -> io::Result<(String, u64)> {
     let mut h = Sha256::new();
-    let mut buf = vec![0u8; 64 * 1024];
+    let mut buf = [0u8; 32 * 1024];
     let mut n = 0u64;
     loop {
         let k = r.read(&mut buf)?;
@@ -179,20 +179,36 @@ pub fn encrypt_with_meta(
     head.extend_from_slice(&meta_json);
     let mut input = io::Cursor::new(head).chain(&mut src);
 
-    let mut buf = vec![0u8; chunk as usize];
+    let chunk_usize = chunk as usize;
+    let total_plain = 4u64.saturating_add(meta_json.len() as u64).saturating_add(meta.size);
+    let first_len = (total_plain.min(chunk as u64) as usize).max(1);
+    // Reuse buffers with in-place encryption: zero per-chunk allocations, and tiny files
+    // (like 70-byte LAN hints) never allocate a full 1 MiB chunk buffer.
+    let mut buf = Vec::with_capacity(first_len + TAG_LEN);
+    buf.resize(first_len, 0);
+    let mut next = Vec::new();
+
     let mut cur = read_full(&mut input, &mut buf)?;
     loop {
+        buf.truncate(cur);
         // Look ahead one chunk so we know which one is the last.
-        let mut next = vec![0u8; chunk as usize];
-        let nlen = if cur == chunk as usize { read_full(&mut input, &mut next)? } else { 0 };
+        let nlen = if cur == chunk_usize {
+            if next.capacity() < chunk_usize + TAG_LEN {
+                next.reserve(chunk_usize + TAG_LEN - next.len());
+            }
+            next.resize(chunk_usize, 0);
+            read_full(&mut input, &mut next)?
+        } else {
+            0
+        };
         if nlen == 0 {
-            let ct = enc.encrypt_last(&buf[..cur]).map_err(|_| Error::Crypto)?;
-            dst.write_all(&ct)?;
+            enc.encrypt_last_in_place(&[][..], &mut buf).map_err(|_| Error::Crypto)?;
+            dst.write_all(&buf)?;
             break;
         }
-        let ct = enc.encrypt_next(&buf[..cur]).map_err(|_| Error::Crypto)?;
-        dst.write_all(&ct)?;
-        buf = next;
+        enc.encrypt_next_in_place(&[][..], &mut buf).map_err(|_| Error::Crypto)?;
+        dst.write_all(&buf)?;
+        std::mem::swap(&mut buf, &mut next);
         cur = nlen;
     }
     dst.flush()?;
@@ -220,7 +236,9 @@ pub fn decrypt(key: &LibraryKey, mut src: impl Read, mut dst: impl Write) -> Res
         stream::DecryptorBE32::from_aead(XChaCha20Poly1305::new((&key.0).into()), (&nonce).into());
 
     let ct_len = chunk as usize + TAG_LEN;
+    // Reuse two buffers with in-place decryption: peak ~2 chunks, zero per-chunk allocations.
     let mut buf = vec![0u8; ct_len];
+    let mut next = Vec::new();
     let mut cur = read_full(&mut src, &mut buf)?;
     let mut sink = Sink::default();
 
@@ -228,16 +246,21 @@ pub fn decrypt(key: &LibraryKey, mut src: impl Read, mut dst: impl Write) -> Res
         return Err(Error::Malformed);
     }
     loop {
-        let mut next = vec![0u8; ct_len];
-        let nlen = if cur == ct_len { read_full(&mut src, &mut next)? } else { 0 };
+        buf.truncate(cur);
+        let nlen = if cur == ct_len {
+            next.resize(ct_len, 0);
+            read_full(&mut src, &mut next)?
+        } else {
+            0
+        };
         if nlen == 0 {
-            let p = dec.decrypt_last(&buf[..cur]).map_err(|_| Error::Crypto)?;
-            sink.push(&p, &mut dst)?;
+            dec.decrypt_last_in_place(&[][..], &mut buf).map_err(|_| Error::Crypto)?;
+            sink.push(&buf, &mut dst)?;
             break;
         }
-        let p = dec.decrypt_next(&buf[..cur]).map_err(|_| Error::Crypto)?;
-        sink.push(&p, &mut dst)?;
-        buf = next;
+        dec.decrypt_next_in_place(&[][..], &mut buf).map_err(|_| Error::Crypto)?;
+        sink.push(&buf, &mut dst)?;
+        std::mem::swap(&mut buf, &mut next);
         cur = nlen;
     }
     dst.flush()?;
@@ -261,6 +284,20 @@ struct Sink {
 impl Sink {
     fn push(&mut self, mut data: &[u8], dst: &mut impl Write) -> Result<()> {
         if self.meta.is_none() {
+            // Fast path: metadata fits completely in the first chunk (almost always true) — zero copy.
+            if self.head.is_empty() && data.len() >= 4 {
+                let l = u32::from_be_bytes(data[..4].try_into().unwrap());
+                if l > MAX_META {
+                    return Err(Error::Malformed);
+                }
+                let l = l as usize;
+                if data.len() >= 4 + l {
+                    self.meta = Some(
+                        serde_json::from_slice(&data[4..4 + l]).map_err(|_| Error::Malformed)?,
+                    );
+                    return self.body(&data[4 + l..], dst);
+                }
+            }
             self.head.extend_from_slice(data);
             data = &[];
             if self.head.len() >= 4 {
